@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.pytest_cache/
+.env
+.project_echo/
+customers/*/data/raw_xml/
+customers/*/data/audit.jsonl

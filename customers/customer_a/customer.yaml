@@ -1,0 +1,5 @@
+customer_id: customer_a
+display_name: "客戶 A"
+allowed_operators: []
+default_persona: default
+

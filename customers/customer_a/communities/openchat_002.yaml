@@ -1,0 +1,12 @@
+community_id: openchat_002
+display_name: "特殊支援群"
+invite_url: "https://line.me/ti/g2/cRJpWyWyyXWMeN1RDjiCdgg2mIay12Ia9o6brA"
+group_id: "cRJpWyWyyXWMeN1RDjiCdgg2mIay12Ia9o6brA"
+persona: default
+device_id: emulator-5554
+patrol_interval_minutes: 720
+enabled: true
+input_x: null
+input_y: null
+send_x: null
+send_y: null

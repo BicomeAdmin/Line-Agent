@@ -1,0 +1,13 @@
+[project]
+name = "project-echo"
+version = "0.1.0"
+description = "AI-assisted private community operations prototype for Lark and Android ADB workflows."
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+llm = ["anthropic>=0.97"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+

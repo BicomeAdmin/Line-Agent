@@ -1,0 +1,2 @@
+"""Project Echo application package."""
+

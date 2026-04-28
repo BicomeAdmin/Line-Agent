@@ -1,0 +1,197 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import time as day_time
+from pathlib import Path
+
+from app.core.calibrations import calibration_store
+from app.core.risk_control import RiskControl
+from app.core.simple_yaml import load_yaml
+from app.storage.paths import customer_root, workspace_root
+
+
+@dataclass(frozen=True)
+class DeviceConfig:
+    device_id: str
+    label: str
+    customer_id: str
+    enabled: bool = True
+    avd_name: str | None = None
+
+
+@dataclass(frozen=True)
+class CustomerConfig:
+    customer_id: str
+    display_name: str
+    allowed_operators: tuple[str, ...]
+    default_persona: str
+
+
+@dataclass(frozen=True)
+class CommunityConfig:
+    customer_id: str
+    community_id: str
+    display_name: str
+    persona: str
+    device_id: str
+    patrol_interval_minutes: int
+    enabled: bool = True
+    input_x: int | None = None
+    input_y: int | None = None
+    send_x: int | None = None
+    send_y: int | None = None
+    coordinate_source: str = "missing"
+    invite_url: str | None = None
+    group_id: str | None = None
+
+
+def load_devices_config() -> list[DeviceConfig]:
+    payload = _load_yaml_file(workspace_root() / "configs" / "devices.yaml")
+    devices = payload.get("devices", [])
+    return [
+        DeviceConfig(
+            device_id=str(item["device_id"]),
+            label=str(item.get("label", item["device_id"])),
+            customer_id=str(item["customer_id"]),
+            enabled=bool(item.get("enabled", True)),
+            avd_name=str(item["avd_name"]) if isinstance(item.get("avd_name"), str) and item.get("avd_name") else None,
+        )
+        for item in devices
+    ]
+
+
+def get_device_config(device_id: str) -> DeviceConfig:
+    for device in load_devices_config():
+        if device.device_id == device_id:
+            return device
+    raise ValueError(f"Unknown device_id: {device_id}")
+
+
+def load_risk_control() -> RiskControl:
+    payload = _load_yaml_file(workspace_root() / "configs" / "risk_control.yaml")
+    activity = payload.get("activity_window", {})
+    send_delay = payload.get("send_delay_seconds", {})
+    return RiskControl(
+        fixed_ip_mode=bool(payload.get("fixed_ip_mode", True)),
+        activity_start=_parse_clock(str(activity.get("start", "09:00"))),
+        activity_end=_parse_clock(str(activity.get("end", "23:00"))),
+        min_send_delay_seconds=float(send_delay.get("min", 5)),
+        max_send_delay_seconds=float(send_delay.get("max", 30)),
+        account_cooldown_seconds=int(payload.get("account_cooldown_seconds", 900)),
+        community_cooldown_seconds=int(payload.get("community_cooldown_seconds", 1800)),
+        require_human_approval=bool(payload.get("require_human_approval", True)),
+    )
+
+
+def load_customer_config(customer_id: str) -> CustomerConfig:
+    payload = _load_yaml_file(customer_root(customer_id) / "customer.yaml")
+    operators = payload.get("allowed_operators", [])
+    return CustomerConfig(
+        customer_id=str(payload.get("customer_id", customer_id)),
+        display_name=str(payload.get("display_name", customer_id)),
+        allowed_operators=tuple(str(item) for item in operators),
+        default_persona=str(payload.get("default_persona", "default")),
+    )
+
+
+def load_community_config(customer_id: str, community_id: str) -> CommunityConfig:
+    payload = _load_yaml_file(customer_root(customer_id) / "communities" / f"{community_id}.yaml")
+    config = CommunityConfig(
+        customer_id=customer_id,
+        community_id=str(payload.get("community_id", community_id)),
+        display_name=str(payload.get("display_name", community_id)),
+        persona=str(payload.get("persona", "default")),
+        device_id=str(payload["device_id"]),
+        patrol_interval_minutes=int(payload.get("patrol_interval_minutes", 120)),
+        enabled=bool(payload.get("enabled", True)),
+        input_x=_optional_int(payload.get("input_x")),
+        input_y=_optional_int(payload.get("input_y")),
+        send_x=_optional_int(payload.get("send_x")),
+        send_y=_optional_int(payload.get("send_y")),
+        invite_url=str(payload["invite_url"]) if isinstance(payload.get("invite_url"), str) and payload.get("invite_url") else None,
+        group_id=str(payload["group_id"]) if isinstance(payload.get("group_id"), str) and payload.get("group_id") else None,
+    )
+    return _apply_runtime_calibration(config)
+
+
+def load_communities_for_device(device_id: str) -> list[CommunityConfig]:
+    communities: list[CommunityConfig] = []
+    for device in load_devices_config():
+        if device.device_id != device_id:
+            continue
+        community_dir = customer_root(device.customer_id) / "communities"
+        for path in sorted(community_dir.glob("*.yaml")):
+            community = load_community_config(device.customer_id, path.stem)
+            if community.device_id == device_id and community.enabled:
+                communities.append(community)
+    return communities
+
+
+def load_all_communities() -> list[CommunityConfig]:
+    communities: list[CommunityConfig] = []
+    for device in load_devices_config():
+        community_dir = customer_root(device.customer_id) / "communities"
+        for path in sorted(community_dir.glob("*.yaml")):
+            community = load_community_config(device.customer_id, path.stem)
+            if community.enabled:
+                communities.append(community)
+    return communities
+
+
+def _load_yaml_file(path: Path) -> dict[str, object]:
+    value = load_yaml(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"Expected mapping in {path}")
+    return value
+
+
+def _parse_clock(value: str) -> day_time:
+    hour_text, minute_text = value.split(":", 1)
+    return day_time(int(hour_text), int(minute_text))
+
+
+def _optional_int(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    return int(value)
+
+
+def _apply_runtime_calibration(config: CommunityConfig) -> CommunityConfig:
+    runtime = calibration_store.get(config.customer_id, config.community_id)
+    if runtime is not None:
+        return CommunityConfig(
+            customer_id=config.customer_id,
+            community_id=config.community_id,
+            display_name=config.display_name,
+            persona=config.persona,
+            device_id=config.device_id,
+            patrol_interval_minutes=config.patrol_interval_minutes,
+            enabled=config.enabled,
+            input_x=runtime.input_x,
+            input_y=runtime.input_y,
+            send_x=runtime.send_x,
+            send_y=runtime.send_y,
+            coordinate_source=runtime.source,
+            invite_url=config.invite_url,
+            group_id=config.group_id,
+        )
+
+    if None not in (config.input_x, config.input_y, config.send_x, config.send_y):
+        return CommunityConfig(
+            customer_id=config.customer_id,
+            community_id=config.community_id,
+            display_name=config.display_name,
+            persona=config.persona,
+            device_id=config.device_id,
+            patrol_interval_minutes=config.patrol_interval_minutes,
+            enabled=config.enabled,
+            input_x=config.input_x,
+            input_y=config.input_y,
+            send_x=config.send_x,
+            send_y=config.send_y,
+            coordinate_source="file",
+            invite_url=config.invite_url,
+            group_id=config.group_id,
+        )
+
+    return config

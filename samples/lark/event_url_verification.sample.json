@@ -1,0 +1,6 @@
+{
+  "type": "url_verification",
+  "token": "test-token",
+  "challenge": "challenge-code"
+}
+

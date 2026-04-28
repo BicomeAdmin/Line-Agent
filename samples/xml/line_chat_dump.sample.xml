@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hierarchy rotation="0">
+  <node index="0" text="10:28" resource-id="android:id/statusBar" class="android.widget.TextView" />
+  <node index="1" text="LINE" resource-id="jp.naver.line.android:id/title" class="android.widget.TextView" />
+  <node index="2" text="請問新手媽媽奶瓶怎麼選？" resource-id="jp.naver.line.android:id/chat_message" class="android.widget.TextView" />
+  <node index="3" text="我之前會先看材質和寶寶接受度" resource-id="jp.naver.line.android:id/chat_message" class="android.widget.TextView" />
+  <node index="4" text="100%" resource-id="android:id/battery" class="android.widget.TextView" />
+  <node index="5" text="玻璃比較好清潔，但外出比較重" resource-id="jp.naver.line.android:id/chat_message" class="android.widget.TextView" />
+  <node index="6" text="傳送" resource-id="jp.naver.line.android:id/send" class="android.widget.Button" />
+</hierarchy>
+

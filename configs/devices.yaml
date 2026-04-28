@@ -1,0 +1,6 @@
+devices:
+  - device_id: emulator-5554
+    label: line-account-01
+    customer_id: customer_a
+    enabled: true
+    avd_name: project-echo-api35

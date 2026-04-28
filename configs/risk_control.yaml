@@ -1,0 +1,11 @@
+fixed_ip_mode: true
+activity_window:
+  start: "09:00"
+  end: "23:00"
+send_delay_seconds:
+  min: 5
+  max: 30
+account_cooldown_seconds: 900
+community_cooldown_seconds: 1800
+require_human_approval: true
+

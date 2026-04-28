@@ -1,0 +1,10 @@
+community_id: openchat_001
+display_name: "愛美星 Cfans俱樂部"
+persona: default
+device_id: emulator-5554
+patrol_interval_minutes: 360
+enabled: true
+input_x: null
+input_y: null
+send_x: null
+send_y: null
