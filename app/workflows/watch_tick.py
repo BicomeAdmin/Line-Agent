@@ -78,6 +78,19 @@ def _tick_one(watch: dict[str, object]) -> dict[str, object]:
     last_draft = float(watch.get("last_draft_epoch") or 0)
     last_signature = watch.get("last_seen_signature") or ""
 
+    # Activity-hour gate: outside operator's defined working window
+    # (default 10:00-22:00 Asia/Taipei, env ACTIVITY_HOURS_START/END),
+    # autonomous watchers stay silent — no navigate, no read, no codex
+    # spawn. Operator-driven Lark commands (compose_and_send via codex
+    # bridge) are NOT gated here; only watcher / patrol autonomy is.
+    from app.core.risk_control import default_risk_control
+    if not default_risk_control.is_activity_time():
+        return {
+            "acted": False,
+            "reason": "outside_activity_hours",
+            "activity_window": f"{default_risk_control.activity_start.strftime('%H:%M')}-{default_risk_control.activity_end.strftime('%H:%M')} Asia/Taipei",
+        }
+
     # Navigate + read.
     nav = navigate_to_openchat(customer_id, community_id, overall_timeout_seconds=20.0)
     if nav.get("status") != "ok":

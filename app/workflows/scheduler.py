@@ -14,6 +14,26 @@ def enqueue_due_patrols(now: float | None = None) -> dict[str, object]:
     enqueued: list[dict[str, object]] = []
     skipped: list[dict[str, object]] = []
 
+    # Activity-hour gate: outside operator's working window (default
+    # 10:00-22:00 Taipei) we skip ALL patrol enqueues. They'll resume
+    # automatically when the window opens again.
+    from app.core.risk_control import default_risk_control
+    if not default_risk_control.is_activity_time():
+        for community in load_all_communities():
+            skipped.append({
+                "community_id": community.community_id,
+                "customer_id": community.customer_id,
+                "reason": "outside_activity_hours",
+            })
+        return {
+            "status": "ok",
+            "enqueued_count": 0,
+            "skipped_count": len(skipped),
+            "enqueued": [],
+            "skipped": skipped,
+            "scheduler_state": scheduler_state.snapshot(),
+        }
+
     for community in load_all_communities():
         interval_seconds = community.patrol_interval_minutes * 60
         community_key = f"{community.customer_id}:{community.community_id}"

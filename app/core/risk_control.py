@@ -1,16 +1,44 @@
 from __future__ import annotations
 
+import os
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time as day_time
+
+
+def _read_hour_env(var: str, default: int) -> int:
+    """Read an HH (0-23) integer hour from env, fall back gracefully."""
+    raw = os.getenv(var, "").strip()
+    if not raw:
+        return default
+    try:
+        h = int(raw)
+        if 0 <= h <= 23:
+            return h
+    except ValueError:
+        pass
+    return default
+
+
+# Taipei local hours operator considers "active" — outside this window
+# autonomous fires (watcher / patrol) stay silent. Operator-triggered
+# Lark commands are still processed any time. Override via env:
+#   ACTIVITY_HOURS_START=10
+#   ACTIVITY_HOURS_END=22
+_DEFAULT_ACTIVITY_START_HOUR = 10
+_DEFAULT_ACTIVITY_END_HOUR = 22
 
 
 @dataclass(frozen=True)
 class RiskControl:
     fixed_ip_mode: bool = True
-    activity_start: day_time = day_time(9, 0)
-    activity_end: day_time = day_time(23, 0)
+    activity_start: day_time = field(
+        default_factory=lambda: day_time(_read_hour_env("ACTIVITY_HOURS_START", _DEFAULT_ACTIVITY_START_HOUR), 0)
+    )
+    activity_end: day_time = field(
+        default_factory=lambda: day_time(_read_hour_env("ACTIVITY_HOURS_END", _DEFAULT_ACTIVITY_END_HOUR), 0)
+    )
     min_send_delay_seconds: float = 5.0
     max_send_delay_seconds: float = 30.0
     account_cooldown_seconds: int = 900
