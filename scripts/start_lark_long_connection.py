@@ -277,10 +277,14 @@ def _dispatch_to_claude(user_text: str, chat_id: str, event_id: str | None, payl
     if chat_id and reply:
         _append_history(chat_id, user_text, reply)
 
-    # Push reply back to Lark.
+    # Push reply back to Lark as an interactive card (header bar + markdown
+    # body). build_reply_card auto-wraps multi-line / structured replies
+    # in a code block so digest layout survives Lark's markdown renderer.
     try:
+        from app.lark.cards import build_reply_card
         client = LarkClient()
-        client.send_message(chat_id, "text", {"text": reply or "（沒有回應）"}, receive_id_type="chat_id")
+        card = build_reply_card(reply or "（沒有回應）")
+        client.send_card(chat_id, card, receive_id_type="chat_id")
         append_audit_event(
             customer_id,
             "lark_reply_sent",
