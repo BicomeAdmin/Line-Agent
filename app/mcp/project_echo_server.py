@@ -54,6 +54,10 @@ from app.workflows.relationship_graph import (
     build_relationship_graph as build_relationship_graph_workflow,
     load_relationship_graph as load_relationship_graph_workflow,
 )
+from app.workflows.lifecycle_tagging import (
+    compute_lifecycle_tags as compute_lifecycle_tags_workflow,
+    load_lifecycle_tags as load_lifecycle_tags_workflow,
+)
 from app.workflows.member_fingerprint import (
     get_member_fingerprint as get_member_fingerprint_workflow,
     load_member_fingerprints as load_member_fingerprints_workflow,
@@ -533,6 +537,31 @@ def tool_add_community(
         patrol_interval_minutes=patrol_interval_minutes,
         persona=persona,
     )
+
+
+def tool_compute_lifecycle_tags(
+    community_id: str,
+    customer_id: str | None = None,
+) -> dict[str, Any]:
+    customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
+    return compute_lifecycle_tags_workflow(customer_id, community_id)
+
+
+def tool_get_lifecycle_distribution(
+    community_id: str,
+    customer_id: str | None = None,
+) -> dict[str, Any]:
+    customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
+    snap = load_lifecycle_tags_workflow(customer_id, community_id)
+    if snap is None:
+        return _ok({"loaded": False, "hint": "請先 compute_lifecycle_tags"})
+    return _ok({
+        "loaded": True,
+        "community_id": community_id,
+        "computed_at_taipei": snap.get("computed_at_taipei"),
+        "distribution": snap.get("distribution"),
+        "total_distinct_members": snap.get("total_distinct_members"),
+    })
 
 
 def tool_build_relationship_graph(
@@ -1074,6 +1103,34 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
             patrol_interval_minutes=patrol_interval_minutes,
             persona=persona,
         ),
+    ),
+    (
+        "compute_lifecycle_tags",
+        "Tag every member of a community with their current lifecycle stage: new (first message ≤ 7d ago) / active (≥1 message in last 7d, ≥3 total) / silent (last message 7-30d ago) / churned (>30d). Schema inspired by github.com/openscrm/api-server, adapted to Paul《私域流量》's 用戶營運金字塔. Used by reply_target_selector to skip churned members and bias toward active/new ones. Run after import_chat_export. Operator triggers: 「X 群成員分布」、「X 群活躍狀況」、「分類 X 群成員」.",
+        {
+            "type": "object",
+            "properties": {
+                "community_id": {"type": "string"},
+                "customer_id": {"type": "string"},
+            },
+            "required": ["community_id"],
+            "additionalProperties": False,
+        },
+        lambda community_id, customer_id=None, **_: tool_compute_lifecycle_tags(community_id=community_id, customer_id=customer_id),
+    ),
+    (
+        "get_lifecycle_distribution",
+        "Quick read of cached lifecycle tag distribution (active/new/silent/churned counts) for a community. Reads the cache; doesn't recompute.",
+        {
+            "type": "object",
+            "properties": {
+                "community_id": {"type": "string"},
+                "customer_id": {"type": "string"},
+            },
+            "required": ["community_id"],
+            "additionalProperties": False,
+        },
+        lambda community_id, customer_id=None, **_: tool_get_lifecycle_distribution(community_id=community_id, customer_id=customer_id),
     ),
     (
         "build_relationship_graph",

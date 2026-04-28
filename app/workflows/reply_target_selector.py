@@ -120,6 +120,7 @@ def select_reply_target(
     operator_persona: dict | None = None,
     member_fingerprints: dict | None = None,  # the bundle from load_member_fingerprints
     threshold: float | None = None,
+    lifecycle_tags: dict | None = None,  # bundle from load_lifecycle_tags
 ) -> TargetDecision:
     """Pick the most reply-worthy message in `messages` (chronological,
     oldest first). messages: list of {sender, text, position}.
@@ -161,6 +162,23 @@ def select_reply_target(
     # so we don't bot-reply into a fight.
     from app.ai.emotion_classifier import get_emotion_classifier
     emotion_clf = get_emotion_classifier()
+
+    # Lifecycle stage lookup — skip churned, boost active, surface KOC.
+    sender_stage_map: dict[str, str] = {}
+    sender_msg_count_map: dict[str, int] = {}
+    if lifecycle_tags and lifecycle_tags.get("members"):
+        for m in lifecycle_tags["members"]:
+            if isinstance(m, dict) and m.get("sender"):
+                sender_stage_map[m["sender"]] = m.get("stage") or "unknown"
+                sender_msg_count_map[m["sender"]] = m.get("message_count") or 0
+
+    # KOC candidate names — boost their messages slightly per Paul's
+    # "1000 鐵粉" doctrine (high-leverage relationship investments).
+    koc_set: set[str] = set()
+    if operator_persona:
+        for c in (operator_persona.get("koc_candidates") or [])[:5]:
+            if isinstance(c, dict) and c.get("sender"):
+                koc_set.add(c["sender"])
 
     # Build operator-utterance set from chat tail. Two paths:
     #   (a) is_self flag — set by line_chat_parser when the parser saw a
@@ -210,6 +228,23 @@ def select_reply_target(
         if _BROADCAST_RE.search(text):
             score -= 1.5
             reasons.append("broadcast_promo:-1.5")
+
+        # Lifecycle-aware boosts/penalties.
+        stage = sender_stage_map.get(sender)
+        if stage == "churned":
+            score -= 1.5
+            reasons.append("lifecycle_churned:-1.5")
+        elif stage == "new":
+            score += 1.0
+            reasons.append("lifecycle_new:+1.0")  # welcome opportunity
+        elif stage == "active":
+            score += 0.5
+            reasons.append("lifecycle_active:+0.5")
+
+        # KOC boost — high-leverage relationship investment.
+        if sender in koc_set:
+            score += 1.0
+            reasons.append("koc_candidate:+1.0")
 
         # Paul's "create value" — concrete pain / need / struggle.
         # Real chance to deepen trust by being helpful. Weighted
