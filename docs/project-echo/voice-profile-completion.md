@@ -52,6 +52,34 @@ for cid in ('openchat_001', 'openchat_002', 'openchat_003', 'openchat_004'):
 
 ## 三條補完管道
 
+### ⭐ 0. 推薦起手式：匯入 LINE 對話紀錄（最完整，也最合規）
+
+LINE 內建「**傳送對話紀錄 → 文字檔**」功能，匯出整段聊天歷史（不只 200 則），且**保留每則訊息的時間 + 發言者名字**——這是 UI 抓取做不到的。
+
+**操作員端（30 秒）：**
+1. 進到目標社群 → 右上選單 → 「**傳送對話紀錄**」 → 「**文字檔**」
+2. 選 LINE Keep / 自己 email / AirDrop 把檔案傳到 Mac
+3. 把檔案放在任何路徑（例 `~/Downloads/[LINE]xxx.txt`）
+
+**對 bot 講：**
+> 「我把 openchat_002 的匯出檔放在 /Users/bicometech/Downloads/[LINE]特殊支援群.txt，幫我 import」
+
+bot 會：
+- Parse 整個檔案（時間戳、發言者、多行訊息合併）
+- 過濾系統廣播 / 連結 / 噪音
+- 把自然語句去重 append 進 voice_profile.md（`top_n_new_samples=50`，比 UI 抓取的 30 更多）
+- **匯出檔複製到** `customers/<id>/data/chat_exports/<community_id>__YYYYMMDD_HHMMSS.txt` 留檔
+- 回報每位 sender 的訊息數、平均字數、樣本 — 你會立刻看到群裡誰最活躍
+
+實測 openchat_002（小型測試群）：解析 9 則、辨識 3 個 sender、寫入 4 句新樣本。
+若是 570 人活躍社群，一次匯入可以拿到數千則訊息，比 UI 抓取多 10-100 倍。
+
+**為什麼這條最合規：**
+- LINE 自家內建功能（不是自動化）
+- 操作員手動觸發（不是 bot 主動）
+- 你自己擁有的對話資料（不涉及他人隱私邊界）
+- 完成後檔案在你 Mac 本機（沒上雲、沒外傳）
+
 ### A. 自動：harvest 真實成員語句（一句話即可）
 
 對 bot 講：「**幫我抓 X 群的語氣樣本**」

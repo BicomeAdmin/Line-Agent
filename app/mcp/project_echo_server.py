@@ -41,6 +41,7 @@ from app.workflows.community_onboarding import (
 from app.workflows.style_harvest import harvest_style_samples as harvest_style_samples_workflow
 from app.workflows.dashboard import collect_dashboard_data, format_text_report
 from app.workflows.persona_context import get_persona_context as get_persona_context_workflow
+from app.workflows.chat_export_import import import_chat_export as import_chat_export_workflow
 from app.workflows.voice_profile_setup import (
     check_voice_profile as check_voice_profile_workflow,
     update_voice_profile_section as update_voice_profile_section_workflow,
@@ -516,6 +517,25 @@ def tool_add_community(
     )
 
 
+def tool_import_chat_export(
+    community_id: str,
+    file_path: str,
+    customer_id: str | None = None,
+    top_n_new_samples: int = 50,
+    total_cap: int = 200,
+    keep_local_copy: bool = True,
+) -> dict[str, Any]:
+    customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
+    return import_chat_export_workflow(
+        customer_id,
+        community_id,
+        file_path,
+        top_n_new_samples=top_n_new_samples,
+        total_cap=total_cap,
+        keep_local_copy=keep_local_copy,
+    )
+
+
 def tool_check_voice_profile(
     community_id: str,
     customer_id: str | None = None,
@@ -916,6 +936,31 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
             display_name=display_name,
             patrol_interval_minutes=patrol_interval_minutes,
             persona=persona,
+        ),
+    ),
+    (
+        "import_chat_export",
+        "Ingest a LINE OpenChat .txt export (the operator-driven, fully-compliant data path) and merge its natural conversational lines into the community's voice_profile.md. The operator runs LINE's built-in 「傳送對話紀錄 → 文字檔」, drops the .txt at a path, and tells the bot 「我把 X 群的匯出檔放在 /path/to/file，幫我 import」. This pulls full chat history with sender names — much richer than the UI-scrape harvest path. Pre-existing harvested samples are preserved (append + dedup), oldest dropped at total_cap. Returns per-sender stats (top 10 by message volume) so the operator can see who's actually active in the community. After import, the auto-managed `## Observed community lines` block is updated and the .txt is copied into customers/<id>/data/chat_exports/ for re-parsing.",
+        {
+            "type": "object",
+            "properties": {
+                "community_id": {"type": "string"},
+                "file_path": {"type": "string", "description": "Absolute path to the LINE .txt export, e.g. /Users/.../Downloads/[LINE]xxx.txt"},
+                "customer_id": {"type": "string"},
+                "top_n_new_samples": {"type": "integer", "default": 50, "description": "Max new samples to add this run (after dedup against existing)."},
+                "total_cap": {"type": "integer", "default": 200, "description": "Cap on total samples kept; oldest drop when exceeded."},
+                "keep_local_copy": {"type": "boolean", "default": True, "description": "Copy the .txt into customers/<id>/data/chat_exports/ for re-parsing."},
+            },
+            "required": ["community_id", "file_path"],
+            "additionalProperties": False,
+        },
+        lambda community_id, file_path, customer_id=None, top_n_new_samples=50, total_cap=200, keep_local_copy=True, **_: tool_import_chat_export(
+            community_id=community_id,
+            file_path=file_path,
+            customer_id=customer_id,
+            top_n_new_samples=top_n_new_samples,
+            total_cap=total_cap,
+            keep_local_copy=keep_local_copy,
         ),
     ),
     (
