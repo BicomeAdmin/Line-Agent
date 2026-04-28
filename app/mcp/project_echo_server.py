@@ -197,7 +197,7 @@ def tool_compose_and_send(
         customer_id=customer_id,
         community_id=community_id,
         device_id=community.device_id,
-        reason="mcp_compose",
+        reason=f"mcp_compose:{source}",
         confidence=None,
         draft_title="LLM 生成稿件待審核",
     )
@@ -215,7 +215,7 @@ def tool_compose_and_send(
         community_name=community.display_name,
         device_id=community.device_id,
         draft_text=text,
-        reason="mcp_compose",
+        reason=f"mcp_compose:{source}",
         confidence=None,
         status="pending",
     )

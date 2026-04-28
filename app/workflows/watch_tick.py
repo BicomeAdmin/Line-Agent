@@ -104,6 +104,17 @@ def _tick_one(watch: dict[str, object]) -> dict[str, object]:
         # New content but still on cooldown — record signature, no draft.
         return {"acted": False, "reason": "cooldown", "new_signature": new_sig}
 
+    # Dedup guard: if the previous auto_watch draft is still pending operator
+    # review, don't compose another one — that just stacks near-duplicate
+    # drafts in the inbox while the operator hasn't acted on the first.
+    pending_id, _ = _find_recent_auto_watch_review(customer_id, community_id)
+    if pending_id is not None:
+        return {
+            "acted": False,
+            "reason": f"prior_auto_watch_pending:{pending_id}",
+            "new_signature": new_sig,
+        }
+
     # Spawn codex with the auto-watch prompt — let it decide compose vs skip.
     try:
         composed = _spawn_codex_for_watch(customer_id, community_id, community.display_name)
@@ -178,12 +189,15 @@ def _find_recent_auto_watch_review(customer_id: str, community_id: str) -> tuple
 
     from app.core.reviews import ACTIVE_REVIEW_STATUSES, review_store
 
+    # Match auto_watch-sourced reviews precisely (reason="mcp_compose:auto_watch").
+    # Legacy records before source-tagging stored bare "mcp_compose" — accept
+    # those too so existing pending drafts still trigger the dedup guard.
     candidates = [
         r for r in review_store.list_all()
         if r.customer_id == customer_id
         and r.community_id == community_id
         and r.status in ACTIVE_REVIEW_STATUSES
-        and (r.reason or "").startswith("mcp_compose")  # any LLM-composed
+        and (r.reason or "") in ("mcp_compose:auto_watch", "mcp_compose")
     ]
     if not candidates:
         return None, None
