@@ -36,7 +36,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Sequence
 
 
-REPLY_THRESHOLD_DEFAULT = 2.5
+REPLY_THRESHOLD_DEFAULT = 2.0
 
 
 def _reply_threshold() -> float:
@@ -111,11 +111,19 @@ def select_reply_target(
             str(s) for s in (vp.get("style_anchors") or "").splitlines()
         ])
 
-    # Build operator-utterance set from chat tail too: any sender whose
-    # name matches the operator nickname is "us" — don't reply to self.
+    # Build operator-utterance set from chat tail. Two paths:
+    #   (a) is_self flag — set by line_chat_parser when the parser saw a
+    #       chat_ui_message_text (operator's own bubble). Most reliable.
+    #   (b) Sender name contains the operator nickname configured for
+    #       this community. Fallback for messages parsed without is_self
+    #       (legacy parser, chat exports, etc.).
     operator_in_chat_indices = {
         i for i, m in enumerate(messages)
-        if operator_nickname and operator_nickname in str(m.get("sender") or "")
+        if (
+            bool(m.get("is_self"))
+            or str(m.get("sender") or "") == "__operator__"
+            or (operator_nickname and operator_nickname in str(m.get("sender") or ""))
+        )
     }
 
     candidates: list[TargetCandidate] = []
@@ -130,7 +138,7 @@ def select_reply_target(
             continue
 
         # Skip operator's own messages.
-        if i in operator_in_chat_indices or (operator_nickname and operator_nickname in sender):
+        if i in operator_in_chat_indices or sender == "__operator__":
             score -= 2.0
             reasons.append("self:-2.0")
             candidates.append(TargetCandidate(index=i, sender=sender, text=text, score=score, reasons=reasons))
@@ -165,15 +173,17 @@ def select_reply_target(
                 reasons.append("question_in_op_thread:+1.5")
 
         # Operator was last to speak before this message — someone is
-        # following up on what we said.
-        prev = _previous_non_self(messages, i, operator_nickname)
-        if prev is not None and operator_nickname and operator_nickname in str(messages[prev].get("sender") or ""):
-            # Wait, we want the OPPOSITE: that the message AT (i-1) IS operator
-            pass
+        # following up on what we said. Detect via is_self flag (parser-
+        # supplied) or nickname-match fallback.
         if i >= 1:
             prev_msg = messages[i - 1]
             prev_sender = str(prev_msg.get("sender") or "")
-            if operator_nickname and operator_nickname in prev_sender:
+            prev_is_op = (
+                bool(prev_msg.get("is_self"))
+                or prev_sender == "__operator__"
+                or (operator_nickname and operator_nickname in prev_sender)
+            )
+            if prev_is_op:
                 score += 2.5
                 reasons.append("after_operator_speech:+2.5")
 
@@ -259,11 +269,18 @@ def _has_answer_within(messages: Sequence[dict], idx: int, *, lookahead: int, ex
 
 
 def _operator_was_in_recent(messages: Sequence[dict], idx: int, operator_nickname: str, *, lookback: int) -> bool:
-    if not operator_nickname:
-        return False
+    """True if any message in [idx-lookback, idx) was sent by the operator.
+    Uses is_self flag, __operator__ sentinel, or nickname match."""
+
     start = max(0, idx - lookback)
     for j in range(start, idx):
-        if operator_nickname in str(messages[j].get("sender") or ""):
+        msg = messages[j]
+        if msg.get("is_self"):
+            return True
+        sender = str(msg.get("sender") or "")
+        if sender == "__operator__":
+            return True
+        if operator_nickname and operator_nickname in sender:
             return True
     return False
 
