@@ -2,6 +2,58 @@
 
 This file is the lightweight engineering log for Project Echo.
 
+> 想看「為什麼這樣設計、過程怎麼走過來」的敘事版本，請看 [`growth-log.md`](growth-log.md)。
+
+## 2026-04-29
+
+### Identity / Philosophy
+
+- **CLAUDE.md §0-prelude (NEW)** — 操作員 explicitly upgraded the AI's working posture from "LINE automation tool" to 「最懂用戶營運、最懂人性的 AI 綜合體 — AICTO」. Six concrete posture cues recorded so future sessions inherit the mindset:看到對話想到關係 / 看到沉默想到信任 / 看到衝突想到機會 / 看到流量想到留量 / 看到自動化想到精細化 / 看到爭辯想到陪伴.
+- **CLAUDE.md §0.5 (NEW)** — 翁梓揚 (Paul, Bicome 創辦人) 著《私域流量》(2025) 全書讀完後，以 VCPVC 心法 / 九宮格技法 / 用戶營運金字塔 / 三種營運途徑 / 1000 鐵粉理論 / Paul 對 AI 的 4 步 pipeline 為主軸，內化為專案的 "house rules"。每個新功能上線前的 gate question：「這條把使用者的用戶推向 KOC 化更近一步嗎？」
+
+### Tier 1 — 5 個 quick-win 升級（每條 ≤ 1 天）
+
+- **T1.1 BGE embedding service** (`app/ai/embedding_service.py` + commit `e5c205e`) — 用 `BAAI/bge-small-zh-v1.5` (95 MB, ~30-80 ms/句) 取代 reply_target_selector 的 bigram Jaccard。語義相似度 cliff: ≥0.45 → +1.5 (topic_overlap_sem), ≥0.30 → +0.5 (topic_loose_sem)。Live calibrated: 「股票漲了不少」vs「台股 4 萬點要保守看」cosine=0.61（bigram 完全看不到）.
+- **T1.2 Operation jitter** (`app/adb/human_jitter.py` + commit `0ebdc56`) — 四個 anti-fingerprint 原語：jittered_sleep (Gaussian)、jittered_tap (triangular pixel jitter)、jittered_swipe (endpoint + duration noise)、reading_pause (cubed-uniform skew toward min)。`ECHO_DISABLE_JITTER=1` 給測試環境用。Wired into openchat_navigate hot path + watch_tick poll interval.
+- **T1.3 4-bucket summary** (commit `dba0759`) — analyze_chat 現在回 `summary: {key_points, decisions, action_items, unresolved_questions, summary_zh}`，純 zh-TW heuristic, 借 open-source-slack-ai 的 4-section schema 但 zh-TW vocab tuned. 0 LLM cost.
+- **T1.4 Chinese-Emotion 8-class** (`app/ai/emotion_classifier.py` + commit `69def90`) — `Johnson8187/Chinese-Emotion` (~400 MB, ~100ms/句). Empirically mapped LABEL_0-7 to 平淡/關切/開心/憤怒/悲傷/疑惑/驚奇/厭惡. Reply selector signals: 疑惑 +2.0, 悲傷 +1.5, 憤怒 -2.5 (with ⚠️escalate marker), 厭惡 -2.0. Confidence ≥ 0.55 cutoff.
+- **T1.5 九宮格 KPI tracker** (`app/workflows/kpi_tracker.py` + commit `b35b06b`) — daily_message_count / distinct_active_senders / operator_participation / broadcast_vs_natural per community per day, persisted to `customers/<id>/data/kpi_snapshots/<community>.json`. Dashboard panel 「📐 九宮格 KPI」 added. Live computed: openchat_004 leads at 273 msgs/7d & 98 weekly active senders; openchat_005 broadcast-heavy with 17 msgs/7d.
+
+### Tier 2 — 5 個 foundation upgrades
+
+- **T2.1 Member relationship graph** (`app/workflows/relationship_graph.py` + commit `570dac7`) — discograph-style temporal-reply edges (5-min windows) + multi-centrality scoring (0.4·in_degree + 0.3·betweenness + 0.2·eigenvector + 0.1·out_degree, all min-max normalized). System-event filter for 「X 加入聊天 / 已收回訊息 / 離開聊天」 patterns. KOC top-5 injected into persona_context for selector use. Live ranking: openchat_003 → 許芳旋 (0.99); openchat_004 → Kevin / 巧克力泡芙 / 小麻雀 (excl. admin 山長).
+- **T2.2 Lifecycle tagging** (`app/workflows/lifecycle_tagging.py` + commit `65318a6`) — 4 stages (new ≤7d / active ≥1msg in 7d & ≥3 total / silent 7-30d / churned >30d). Selector signals: churned -1.5, new +1.0, active +0.5, koc_candidate +1.0. OpenSCRM-inspired schema, zh-TW vocab.
+- **T2.3 Edit feedback loop** (`app/workflows/edit_feedback.py` + commit `ab32d3f`) — Paul《私域流量》Step 4「實時回饋優化」 finally landed. Every operator edit on Lark cards captures (original, edited) pair to JSONL log per community. `persona_context` now exposes `recent_edits` + `edit_lessons_zh` (rendered prompt section) for in-context learning. Diff summarizer surfaces 字數 delta / particle delta / punct delta patterns.
+- **T2.4 Stylometric extension** (commit `ed35fd5`) — MemberFingerprint 從 3 維擴到 11+ 維: function_word_freq (~25 zh-TW chat 虛詞 per 100 chars), punctuation_signature (counts per ！?～。，、…), line_break_rate, multi_msg_burst_rate, type_token_ratio (Han bigram MTLD-style), typo_signature (ㄉ/ㄅ/ㄋ/降/醬/蝦米 patterns), avg_punct_per_msg, repeated_punct_rate. Live: 山長王志鈞 「降_for_這樣」×2 typo caught; 許芳旋 「我」 self-reference 2.76% 抓到; ttr 區分 0.68 (教學重複型) vs 0.91 (閒聊多樣型).
+- **T2.5 Bezier swipe** (commit `a1b67dd`) — quadratic Bezier curve via `input motionevent DOWN/MOVE/UP` (verified working on API 35 emulator). 12 sampling points, smooth-step easing on t, ±25% perpendicular offset, ±4 px endpoint jitter. Falls back to standard `input swipe` on older API. openchat_navigate scroll calls upgraded.
+
+### Validated (this session)
+
+- 264/264 unit tests green (was 240 at session start, +24 tests added across 10 commits).
+- All 5 communities (openchat_001/002/003/004/005) have:
+  - operator_nickname configured (比利 / 阿樂2 / 愛莎 / 妍 / Eric_營運)
+  - chat_export imported with full sender attribution
+  - member fingerprints (extended stylometric)
+  - KPI snapshots
+  - lifecycle tags
+  - relationship graph + KOC candidates
+- Three services live under new code: scheduler_daemon, lark_bridge, web_dashboard.
+- Live calibrations on openchat_003: KOC top is 許芳旋 (in_deg 8, eigen 0.72); persona_context now correctly injects recent_self_posts, koc_candidates, recent_edits, edit_lessons_zh.
+
+### New MCP tools registered this session
+
+- `compute_community_kpis` / `kpi_summary`
+- `build_relationship_graph` / `get_koc_candidates`
+- `compute_lifecycle_tags` / `get_lifecycle_distribution`
+- (T1.4 emotion classifier + T1.1 embedding service are library-internal, consumed inside reply_target_selector / persona_context.)
+
+### Known Open Issues (carried forward)
+
+- 「new」 lifecycle counts inflated because chat exports cover ~2 weeks; operator can re-export longer history later for accurate first_seen.
+- Conversion rate KPI not yet computed (needs operator-labelled order data — Tier 2 follow-up).
+- Read rate KPI not computable from ADB / chat export (LINE doesn't expose).
+- Tier 3 items (real device, OCR fallback, group SOP, BERTopic, backup strategy) deferred — recommend running 1-2 days of Tier 1+2 in production to gather edit_feedback signal before deciding which Tier 3 item is the real bottleneck.
+
 ## 2026-04-28
 
 ### Added
