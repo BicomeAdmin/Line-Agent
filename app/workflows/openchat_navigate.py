@@ -27,6 +27,12 @@ from app.adb.line_app import (
     is_inside_chat_history,
     open_line,
 )
+from app.adb.human_jitter import (
+    jittered_sleep,
+    jittered_swipe,
+    jittered_tap,
+    reading_pause,
+)
 from app.adb.text_input import TextInputError, send_text
 from app.adb.uiautomator import dump_ui_xml
 from app.core.audit import append_audit_event
@@ -67,7 +73,7 @@ def navigate_to_openchat(
     if deep_link is not None:
         try:
             client.shell("am", "start", "-a", "android.intent.action.VIEW", "-d", deep_link, check=False)
-            time.sleep(2.5)
+            jittered_sleep(2.5)
         except AdbError as exc:
             trace.append({"step": "deep_link_intent_failed", "detail": str(exc)})
         else:
@@ -83,7 +89,7 @@ def navigate_to_openchat(
     if not check_current_app(client):
         try:
             open_line(client)
-            time.sleep(2.0)
+            jittered_sleep(2.0)
         except AdbError as exc:
             return _blocked(
                 customer_id, community_id, "line_launch_failed", trace,
@@ -108,7 +114,7 @@ def navigate_to_openchat(
                 customer_id, community_id, "stuck_in_chat_history", trace,
                 {"hint": "BACK 鍵未能離開 ChatHistoryActivity，可能 LINE 卡住或彈窗"},
             )
-        time.sleep(0.5)  # let the chat list animate in
+        jittered_sleep(0.5)  # let the chat list animate in
 
     xml_path = _navigate_xml_path(customer_id, community_id, "00_initial")
     initial_xml = _dump(client, xml_path)
@@ -118,8 +124,8 @@ def navigate_to_openchat(
     # Step 2: ensure on Chats tab.
     chats_tab = _find_clickable_with_text(initial_xml, CHATS_TAB_HINTS, prefer_bottom=True)
     if chats_tab is not None:
-        client.shell("input", "tap", str(chats_tab["center"][0]), str(chats_tab["center"][1]))
-        time.sleep(1.0)
+        jittered_tap(client, chats_tab["center"][0], chats_tab["center"][1])
+        jittered_sleep(1.0)
         trace.append({"step": "tapped_chats_tab", "at": chats_tab["center"]})
 
     # Step 3a: scan the visible chat list directly. Most newly-active rooms are
@@ -139,8 +145,8 @@ def navigate_to_openchat(
         max_scrolls = 4
         while matched is None and scroll_attempts < max_scrolls:
             scroll_attempts += 1
-            client.shell("input", "swipe", "540", "1800", "540", "900", "300")
-            time.sleep(0.8)
+            jittered_swipe(client, 540, 1800, 540, 900, 300)
+            jittered_sleep(0.8)
             scrolled_xml = _dump(
                 client,
                 _navigate_xml_path(customer_id, community_id, f"01_chats_scroll_{scroll_attempts}"),
@@ -162,8 +168,8 @@ def navigate_to_openchat(
     if matched is None:
         # Scroll back to top of list before searching, so the search bar is visible.
         for _ in range(scroll_attempts if "scroll_attempts" in dir() else 0):
-            client.shell("input", "swipe", "540", "900", "540", "1800", "300")
-            time.sleep(0.4)
+            jittered_swipe(client, 540, 900, 540, 1800, 300)
+            jittered_sleep(0.4)
         search_xml = _dump(client, _navigate_xml_path(customer_id, community_id, "01_chats_top"))
         search = _find_search_target(search_xml or chat_list_xml)
         if search is None:
@@ -171,8 +177,8 @@ def navigate_to_openchat(
                 customer_id, community_id, "target_not_in_chat_list", trace,
                 {"target_name": target_name, "hint": "did not find target by scanning + scrolling, and no search bar found"},
             )
-        client.shell("input", "tap", str(search["center"][0]), str(search["center"][1]))
-        time.sleep(0.8)
+        jittered_tap(client, search["center"][0], search["center"][1])
+        jittered_sleep(0.8)
         trace.append({"step": "tapped_search_bar", "at": search["center"]})
 
         typed_query = _shortest_query(candidates) or target_name
@@ -188,7 +194,7 @@ def navigate_to_openchat(
                 customer_id, community_id, "text_input_failed", trace,
                 {"typed_query": typed_query, "send_result": send_result},
             )
-        time.sleep(0.8)
+        jittered_sleep(0.8)
         trace.append({"step": "typed_query", "query": typed_query, "method": send_result.get("method")})
 
         deadline = time.time() + overall_timeout_seconds
@@ -229,8 +235,8 @@ def navigate_to_openchat(
     )
 
     # Step 6: tap the matched row.
-    client.shell("input", "tap", str(matched["center"][0]), str(matched["center"][1]))
-    time.sleep(1.5)
+    jittered_tap(client, matched["center"][0], matched["center"][1])
+    jittered_sleep(1.5)
     trace.append({"step": "tapped_result"})
 
     # Step 7: verify via existing OpenChat validation.

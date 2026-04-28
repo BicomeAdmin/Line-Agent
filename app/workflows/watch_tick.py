@@ -49,13 +49,21 @@ def tick_all_watches() -> dict[str, object]:
     replies past cooldown.
     """
 
+    from app.adb.human_jitter import jittered_poll_interval
+
     fired: list[dict[str, object]] = []
     skipped: list[dict[str, object]] = []
     now = time.time()
     for watch in list_active_watches_all_customers():
         watch_id = str(watch.get("watch_id") or "")
         last_check = float(watch.get("last_check_epoch") or 0)
-        if last_check and (now - last_check) < int(watch.get("poll_interval_seconds") or 60):
+        # Random ±25% jitter on poll interval so two daemons running
+        # the same config don't poll in lockstep, and any single watch's
+        # cadence isn't perfectly periodic. Anti-fingerprinting per
+        # roadmap Tier 1 #2.
+        base_interval = int(watch.get("poll_interval_seconds") or 60)
+        jittered_min = jittered_poll_interval(base_interval)
+        if last_check and (now - last_check) < jittered_min:
             skipped.append({"watch_id": watch_id, "reason": "poll_interval"})
             continue
         outcome = _tick_one(watch)
