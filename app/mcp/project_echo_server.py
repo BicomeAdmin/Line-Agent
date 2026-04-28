@@ -42,6 +42,12 @@ from app.workflows.style_harvest import harvest_style_samples as harvest_style_s
 from app.workflows.dashboard import collect_dashboard_data, format_text_report
 from app.workflows.persona_context import get_persona_context as get_persona_context_workflow
 from app.workflows.chat_export_import import import_chat_export as import_chat_export_workflow
+from app.workflows.member_fingerprint import (
+    get_member_fingerprint as get_member_fingerprint_workflow,
+    load_member_fingerprints as load_member_fingerprints_workflow,
+    refresh_member_fingerprints as refresh_member_fingerprints_workflow,
+)
+from app.workflows.reply_target_selector import select_reply_target as select_reply_target_workflow
 from app.workflows.voice_profile_setup import (
     check_voice_profile as check_voice_profile_workflow,
     update_voice_profile_section as update_voice_profile_section_workflow,
@@ -517,6 +523,74 @@ def tool_add_community(
     )
 
 
+def tool_refresh_member_fingerprints(
+    community_id: str,
+    customer_id: str | None = None,
+) -> dict[str, Any]:
+    customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
+    return refresh_member_fingerprints_workflow(customer_id, community_id)
+
+
+def tool_get_member_fingerprint(
+    community_id: str,
+    sender: str,
+    customer_id: str | None = None,
+) -> dict[str, Any]:
+    customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
+    fp = get_member_fingerprint_workflow(customer_id, community_id, sender)
+    if fp is None:
+        return _ok({"loaded": False, "sender": sender, "hint": "請先 refresh_member_fingerprints({community_id}) 或匯入對話紀錄"})
+    return _ok({"loaded": True, "fingerprint": fp})
+
+
+def tool_select_reply_target(
+    community_id: str,
+    customer_id: str | None = None,
+    threshold: float | None = None,
+) -> dict[str, Any]:
+    """Auto-pick which message in this community's recent chat the bot
+    should reply to. Combines persona_context (who am I), member
+    fingerprints (who they are), and the chat tail (what's happening
+    right now) to score each message — returns the best target above
+    a confidence threshold, or target=None to skip this round."""
+
+    customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
+    # Lazy imports to avoid pulling adb stack into trivial server boot.
+    from app.adb.client import AdbClient
+    from app.storage.config_loader import load_community_config
+    from app.storage.paths import default_raw_xml_path
+    from app.workflows.read_chat import read_recent_chat
+    from app.workflows.openchat_navigate import navigate_to_openchat
+
+    try:
+        community = load_community_config(customer_id, community_id)
+    except Exception as exc:  # noqa: BLE001
+        return _error("community_lookup_failed", detail=str(exc))
+
+    nav = navigate_to_openchat(customer_id, community_id, overall_timeout_seconds=20.0)
+    if nav.get("status") != "ok":
+        return _error("navigate_failed", detail=nav.get("reason"))
+
+    try:
+        messages = read_recent_chat(
+            AdbClient(device_id=community.device_id),
+            default_raw_xml_path(customer_id),
+            limit=20,
+        )
+    except RuntimeError as exc:
+        return _error("read_failed", detail=str(exc))
+
+    persona = get_persona_context_workflow(customer_id, community_id)
+    fingerprints = load_member_fingerprints_workflow(customer_id, community_id)
+    decision = select_reply_target_workflow(
+        messages,
+        operator_persona=persona,
+        member_fingerprints=fingerprints,
+        threshold=threshold,
+    )
+    return _ok(decision.to_dict())
+
+
 def tool_import_chat_export(
     community_id: str,
     file_path: str,
@@ -937,6 +1011,50 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
             patrol_interval_minutes=patrol_interval_minutes,
             persona=persona,
         ),
+    ),
+    (
+        "refresh_member_fingerprints",
+        "Compute per-member style fingerprints (message_count / avg_length / emoji_rate / common opening / closing particles / recent_lines / last_seen_date) for every sender in a community, using the latest chat_export .txt as source. Persists to customers/<id>/data/member_fingerprints/<community_id>.json. Run this once after import_chat_export, or any time the operator says 「重新算 X 群成員的風格 / 更新 X 群的成員資料」.",
+        {
+            "type": "object",
+            "properties": {
+                "community_id": {"type": "string"},
+                "customer_id": {"type": "string"},
+            },
+            "required": ["community_id"],
+            "additionalProperties": False,
+        },
+        lambda community_id, customer_id=None, **_: tool_refresh_member_fingerprints(community_id=community_id, customer_id=customer_id),
+    ),
+    (
+        "get_member_fingerprint",
+        "Look up one member's style fingerprint by exact sender name. Returns avg_length, emoji_rate, top opening words, top ending particles, and recent_lines (last 10 messages). Use before composing a reply targeted at a specific person — the draft should mirror their length and style. Returns loaded=False if the community's fingerprint cache is missing (run refresh_member_fingerprints first) or the sender isn't in the cache.",
+        {
+            "type": "object",
+            "properties": {
+                "community_id": {"type": "string"},
+                "sender": {"type": "string", "description": "Exact sender name as stored in the fingerprint cache, e.g. '許芳旋' or '阿樂 本尊'."},
+                "customer_id": {"type": "string"},
+            },
+            "required": ["community_id", "sender"],
+            "additionalProperties": False,
+        },
+        lambda community_id, sender, customer_id=None, **_: tool_get_member_fingerprint(community_id=community_id, sender=sender, customer_id=customer_id),
+    ),
+    (
+        "select_reply_target",
+        "**Autonomous reply-target selection.** Reads the community's current chat tail, scores each message for reply-worthiness (mentions / unanswered questions in operator's threads / follow-ups to operator's words / topic overlap with operator's recent posts), applies a confidence threshold, and returns either the best target (with sender / text / score / reasons) or target=None to skip this round. Use in autonomous flows (Watcher Phase 2) so the bot picks who to reply to without operator-per-turn input. Combines with get_member_fingerprint(target.sender) before composing — the draft should match the target's style. HIL invariant unchanged: actual send still requires operator approval; this tool only decides candidate selection.",
+        {
+            "type": "object",
+            "properties": {
+                "community_id": {"type": "string"},
+                "customer_id": {"type": "string"},
+                "threshold": {"type": "number", "description": "Optional override for the confidence threshold (default 2.5, env REPLY_TARGET_THRESHOLD). Higher = more conservative."},
+            },
+            "required": ["community_id"],
+            "additionalProperties": False,
+        },
+        lambda community_id, customer_id=None, threshold=None, **_: tool_select_reply_target(community_id=community_id, customer_id=customer_id, threshold=threshold),
     ),
     (
         "import_chat_export",

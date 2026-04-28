@@ -1,0 +1,276 @@
+"""Auto-select which message in a chat the operator should reply to.
+
+The piece that turns Watcher Phase 2 from "operator says compose for
+me" into autonomous "bot watches, decides, drafts — operator just
+approves the card." HIL invariant unchanged: actual send still
+requires operator approval. This is target-selection + composition
+autonomy, not send autonomy.
+
+Scoring rubric (all weights tunable, all transparent in the trace):
+
+  +5.0  message @-mentions the operator (directed)
+  +3.5  message is a question (?/？/疑問詞) AND nobody has answered
+        AND operator participated in this thread before
+  +2.5  operator was last to speak in the thread before this message
+        (someone is following up on operator's words)
+  +1.5  topic keyword overlap with operator's recent self-posts or
+        voice profile sample lines (signals operator has stake)
+  -2.0  message is a system/auto-reply post (Auto-reply / 公告 / 已收回)
+  -2.0  message is from operator themselves (don't reply to self)
+  -1.0  message is too short (<4 chars after stripping emoji) — usually
+        sticker / picture without context
+
+Recency decay: linear, 1.0 weight at "most recent message", 0.0 at
+the 20th message back. We don't reply to ancient threads.
+
+A target is `actionable` only if score >= REPLY_THRESHOLD (default 2.5).
+If no message clears the bar, returns target=None — watcher should
+silently skip rather than burn an operator review on a weak pick.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import asdict, dataclass, field
+from typing import Sequence
+
+
+REPLY_THRESHOLD_DEFAULT = 2.5
+
+
+def _reply_threshold() -> float:
+    try:
+        return float(os.getenv("REPLY_TARGET_THRESHOLD", str(REPLY_THRESHOLD_DEFAULT)))
+    except ValueError:
+        return REPLY_THRESHOLD_DEFAULT
+
+
+_QUESTION_RE = re.compile(r"[?？]|請問|想問|有人知道|有沒有人|怎麼|什麼|哪裡|為什麼|是不是")
+_AUTO_PATTERNS = ("Auto-reply", "auto-reply", "已收回訊息", "加入聊天", "離開聊天")
+
+
+@dataclass
+class TargetCandidate:
+    index: int                     # position in original chat list (0 = oldest)
+    sender: str
+    text: str
+    score: float
+    reasons: list[str] = field(default_factory=list)
+    actionable: bool = False
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass
+class TargetDecision:
+    target: TargetCandidate | None
+    threshold: float
+    all_scored: list[TargetCandidate]
+    skip_reason: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "target": self.target.to_dict() if self.target else None,
+            "threshold": self.threshold,
+            "skip_reason": self.skip_reason,
+            "considered": [c.to_dict() for c in self.all_scored],
+        }
+
+
+def select_reply_target(
+    messages: Sequence[dict],
+    *,
+    operator_persona: dict | None = None,
+    member_fingerprints: dict | None = None,  # the bundle from load_member_fingerprints
+    threshold: float | None = None,
+) -> TargetDecision:
+    """Pick the most reply-worthy message in `messages` (chronological,
+    oldest first). messages: list of {sender, text, position}.
+
+    operator_persona: result of get_persona_context (so we know who I am
+    in this community + my recent_self_posts).
+    member_fingerprints: cached bundle from load_member_fingerprints
+    (used here mostly for sender-frequency context, not core scoring).
+    """
+
+    threshold = threshold if threshold is not None else _reply_threshold()
+    if not messages:
+        return TargetDecision(target=None, threshold=threshold, all_scored=[], skip_reason="no_messages")
+
+    operator_nickname = ""
+    operator_recent_texts: list[str] = []
+    operator_keywords: set[str] = set()
+    if operator_persona and operator_persona.get("status") == "ok":
+        vp = operator_persona.get("voice_profile") or {}
+        operator_nickname = (vp.get("nickname") or "").strip()
+        recent = operator_persona.get("recent_self_posts") or []
+        operator_recent_texts = [str(r.get("text") or "") for r in recent]
+        operator_keywords = _extract_keywords(operator_recent_texts + [
+            str(s) for s in (vp.get("style_anchors") or "").splitlines()
+        ])
+
+    # Build operator-utterance set from chat tail too: any sender whose
+    # name matches the operator nickname is "us" — don't reply to self.
+    operator_in_chat_indices = {
+        i for i, m in enumerate(messages)
+        if operator_nickname and operator_nickname in str(m.get("sender") or "")
+    }
+
+    candidates: list[TargetCandidate] = []
+    n = len(messages)
+    for i, msg in enumerate(messages):
+        sender = str(msg.get("sender") or "").strip()
+        text = str(msg.get("text") or "").strip()
+        score = 0.0
+        reasons: list[str] = []
+
+        if not text:
+            continue
+
+        # Skip operator's own messages.
+        if i in operator_in_chat_indices or (operator_nickname and operator_nickname in sender):
+            score -= 2.0
+            reasons.append("self:-2.0")
+            candidates.append(TargetCandidate(index=i, sender=sender, text=text, score=score, reasons=reasons))
+            continue
+
+        # System / auto-reply patterns.
+        if any(p in sender or p in text for p in _AUTO_PATTERNS):
+            score -= 2.0
+            reasons.append("auto_or_system:-2.0")
+
+        # Very short messages (likely stickers/pictures without context).
+        stripped_for_len = re.sub(r"[\s　]+", "", text)
+        if len(stripped_for_len) < 4:
+            score -= 1.0
+            reasons.append("too_short:-1.0")
+
+        # Direct @-mention to operator.
+        if operator_nickname and (f"@{operator_nickname}" in text or operator_nickname in text):
+            score += 5.0
+            reasons.append("mentions_operator:+5.0")
+
+        # Question with no answer yet AND operator participated in thread.
+        is_question = bool(_QUESTION_RE.search(text))
+        if is_question:
+            answered_after = _has_answer_within(messages, i, lookahead=5, exclude_sender=sender)
+            operator_in_thread = _operator_was_in_recent(messages, i, operator_nickname, lookback=8)
+            if not answered_after and operator_in_thread:
+                score += 3.5
+                reasons.append("unanswered_q_in_op_thread:+3.5")
+            elif is_question and operator_in_thread:
+                score += 1.5
+                reasons.append("question_in_op_thread:+1.5")
+
+        # Operator was last to speak before this message — someone is
+        # following up on what we said.
+        prev = _previous_non_self(messages, i, operator_nickname)
+        if prev is not None and operator_nickname and operator_nickname in str(messages[prev].get("sender") or ""):
+            # Wait, we want the OPPOSITE: that the message AT (i-1) IS operator
+            pass
+        if i >= 1:
+            prev_msg = messages[i - 1]
+            prev_sender = str(prev_msg.get("sender") or "")
+            if operator_nickname and operator_nickname in prev_sender:
+                score += 2.5
+                reasons.append("after_operator_speech:+2.5")
+
+        # Topic overlap with operator's voice / recent posts.
+        if operator_keywords:
+            msg_kw = _extract_keywords([text])
+            overlap = msg_kw & operator_keywords
+            if overlap:
+                score += 1.5
+                reasons.append(f"topic_overlap:+1.5({'/'.join(list(overlap)[:3])})")
+
+        # Recency decay: messages further back lose weight.
+        recency_factor = max(0.0, 1.0 - (n - 1 - i) / 20.0)
+        score *= recency_factor
+        if recency_factor < 1.0:
+            reasons.append(f"recency_x{recency_factor:.2f}")
+
+        candidates.append(TargetCandidate(index=i, sender=sender, text=text, score=round(score, 2), reasons=reasons))
+
+    # Mark actionable + pick best.
+    for c in candidates:
+        c.actionable = c.score >= threshold
+
+    if not candidates:
+        return TargetDecision(target=None, threshold=threshold, all_scored=[], skip_reason="no_scorable_messages")
+
+    best = max(candidates, key=lambda c: c.score)
+    if not best.actionable:
+        return TargetDecision(
+            target=None,
+            threshold=threshold,
+            all_scored=candidates,
+            skip_reason=f"no_candidate_above_threshold(top={best.score})",
+        )
+
+    return TargetDecision(target=best, threshold=threshold, all_scored=candidates)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────
+
+_HAN_RUN_RE = re.compile(r"[一-鿿]+")
+_ASCII_WORD_RE = re.compile(r"[A-Za-z]{3,}")
+
+
+def _extract_keywords(texts: list[str]) -> set[str]:
+    """Topic keyword set via 2-char bigrams over Han runs + ASCII words.
+
+    Chinese has no whitespace, so a greedy `[一-鿿]+` match would
+    collapse a whole sentence into one token and miss any partial
+    overlap. Sliding 2-char bigrams give us reasonable topic signal
+    without a real segmenter (e.g. jieba) — '股票' will appear in both
+    '昨天股票漲了不少' and '今天股票行情怎麼樣'.
+    """
+
+    kw: set[str] = set()
+    for t in texts:
+        for run in _HAN_RUN_RE.findall(t):
+            for i in range(len(run) - 1):
+                kw.add(run[i : i + 2])
+        for word in _ASCII_WORD_RE.findall(t):
+            kw.add(word.lower())
+
+    # Drop common bigrams that don't carry topic signal — pronouns,
+    # function-word fragments, and generic time/quantity words.
+    stopwords = {
+        "我們", "你們", "他們", "今天", "明天", "昨天", "可以", "什麼", "怎麼", "為什",
+        "這個", "那個", "這樣", "那樣", "因為", "所以", "但是", "或是", "或者",
+        "覺得", "知道", "想要", "需要", "一個", "一下", "一點", "有人", "好像",
+        "還是", "已經", "真的", "其實", "結果", "後來", "然後",
+    }
+    return kw - stopwords
+
+
+def _has_answer_within(messages: Sequence[dict], idx: int, *, lookahead: int, exclude_sender: str) -> bool:
+    end = min(len(messages), idx + 1 + lookahead)
+    for j in range(idx + 1, end):
+        s = str(messages[j].get("sender") or "")
+        if s and s != exclude_sender:
+            return True
+    return False
+
+
+def _operator_was_in_recent(messages: Sequence[dict], idx: int, operator_nickname: str, *, lookback: int) -> bool:
+    if not operator_nickname:
+        return False
+    start = max(0, idx - lookback)
+    for j in range(start, idx):
+        if operator_nickname in str(messages[j].get("sender") or ""):
+            return True
+    return False
+
+
+def _previous_non_self(messages: Sequence[dict], idx: int, operator_nickname: str) -> int | None:
+    for j in range(idx - 1, -1, -1):
+        s = str(messages[j].get("sender") or "")
+        if not (operator_nickname and operator_nickname in s):
+            return j
+    return None
