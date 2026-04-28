@@ -20,7 +20,13 @@ import time
 from pathlib import Path
 
 from app.adb.client import AdbClient, AdbError
-from app.adb.line_app import LINE_PACKAGE, check_current_app, open_line
+from app.adb.line_app import (
+    LINE_PACKAGE,
+    back_to_chat_list,
+    check_current_app,
+    is_inside_chat_history,
+    open_line,
+)
 from app.adb.text_input import TextInputError, send_text
 from app.adb.uiautomator import dump_ui_xml
 from app.core.audit import append_audit_event
@@ -88,6 +94,21 @@ def navigate_to_openchat(
                 customer_id, community_id, "line_not_foreground", trace,
             )
     trace.append({"step": "line_in_foreground"})
+
+    # If LINE was left inside a previous chat (e.g. operator just navigated
+    # to community A and now wants community B without an explicit "go
+    # home" step), the subsequent chat-list scan / search operates on the
+    # wrong view — we'd search within the open chat's content. Press BACK
+    # until ChatHistoryActivity is no longer focused.
+    if is_inside_chat_history(client):
+        back_result = back_to_chat_list(client, max_attempts=3)
+        trace.append({"step": "backed_out_of_chat_history", **back_result})
+        if not back_result.get("success"):
+            return _blocked(
+                customer_id, community_id, "stuck_in_chat_history", trace,
+                {"hint": "BACK 鍵未能離開 ChatHistoryActivity，可能 LINE 卡住或彈窗"},
+            )
+        time.sleep(0.5)  # let the chat list animate in
 
     xml_path = _navigate_xml_path(customer_id, community_id, "00_initial")
     initial_xml = _dump(client, xml_path)

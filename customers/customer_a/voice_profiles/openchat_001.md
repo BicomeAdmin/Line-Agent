@@ -41,3 +41,13 @@
 
 - 此社群為**真實營運社群**，所有發言必須通過 review_store
 - 上線到此社群前必須先在 openchat_002（內部測試群）試過幾輪、確認語氣品質
+
+<!-- BEGIN auto-harvested community lines -->
+## Observed community lines（自動抓取的真實成員語句，覆寫安全，請勿手改）
+
+- 愛美星 Cfans俱樂部
+- 嚕嚕🐲加入聊天
+- 以下為尚未閱讀的訊息 (3)
+- 允兒加入聊天
+- 模特兒牛奶
+<!-- END auto-harvested community lines -->
