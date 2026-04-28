@@ -18,7 +18,11 @@ class RiskControl:
     require_human_approval: bool = True
 
     def is_activity_time(self, now: datetime | None = None) -> bool:
-        current = (now or datetime.now()).time()
+        # activity_start / activity_end are interpreted as Asia/Taipei
+        # local times (operator's reference frame). Use the Taipei helper
+        # explicitly so the check is correct regardless of host timezone.
+        from app.core.timezone import taipei_now
+        current = (now or taipei_now()).time()
         return self.activity_start <= current <= self.activity_end
 
     def random_send_delay(self) -> float:

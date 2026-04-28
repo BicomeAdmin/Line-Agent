@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.core.audit import read_recent_audit_events
@@ -98,7 +98,7 @@ def collect_dashboard_data(customer_id: str = "customer_a") -> dict[str, object]
             "draft_text": r.draft_text,
             "age_hours": round(age_seconds / 3600, 2),
             "age_seconds": int(age_seconds),
-            "created_at_taipei": to_taipei_str(datetime.fromtimestamp(r.created_at)),
+            "created_at_taipei": to_taipei_str(datetime.fromtimestamp(r.created_at, timezone.utc)),
         })
     oldest_pending_hours = max((p["age_hours"] for p in pending_review_summary), default=0.0)
 
@@ -113,7 +113,7 @@ def collect_dashboard_data(customer_id: str = "customer_a") -> dict[str, object]
     health = _process_health()
 
     return {
-        "generated_at_taipei": to_taipei_str(datetime.fromtimestamp(now)),
+        "generated_at_taipei": to_taipei_str(datetime.fromtimestamp(now, timezone.utc)),
         "customer_id": customer_id,
         "health": health,
         "send_metrics_24h": metrics,
@@ -369,10 +369,8 @@ def should_send_daily_digest(
     Idempotent: scheduler_daemon can call this every cycle; we only fire once.
     """
 
-    from datetime import timezone, timedelta
-
-    tz = timezone(timedelta(hours=8))  # Asia/Taipei
-    now = datetime.fromtimestamp(now_epoch or time.time(), tz=tz)
+    from app.core.timezone import TAIPEI
+    now = datetime.fromtimestamp(now_epoch or time.time(), tz=TAIPEI)
 
     # Window: target_hour:00–target_hour:05 to avoid missing if a cycle drifts.
     if now.hour != target_hour_taipei or now.minute >= 5:
@@ -390,9 +388,8 @@ def should_send_daily_digest(
 
 
 def mark_daily_digest_sent(customer_id: str, now_epoch: float | None = None) -> None:
-    from datetime import timezone, timedelta
-    tz = timezone(timedelta(hours=8))
-    now = datetime.fromtimestamp(now_epoch or time.time(), tz=tz)
+    from app.core.timezone import TAIPEI
+    now = datetime.fromtimestamp(now_epoch or time.time(), tz=TAIPEI)
     marker = daily_digest_marker_path(customer_id)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(now.strftime("%Y-%m-%d"), encoding="utf-8")

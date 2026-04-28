@@ -23,6 +23,15 @@ from app.storage.paths import watches_state_path
 _lock = threading.Lock()
 
 
+def _format_taipei_iso(epoch: float) -> str:
+    """Format an epoch as ISO 8601 in Asia/Taipei. Used in audit
+    payloads so operator-facing timestamps don't depend on host tz."""
+
+    from datetime import datetime
+    from app.core.timezone import TAIPEI
+    return datetime.fromtimestamp(epoch, TAIPEI).isoformat()
+
+
 @dataclass
 class Watch:
     watch_id: str
@@ -103,7 +112,7 @@ def add_watch(
             "watch_id": watch_id,
             "community_id": community_id,
             "duration_minutes": duration_minutes,
-            "end_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(record.end_at_epoch)),
+            "end_at": _format_taipei_iso(record.end_at_epoch),
             "initiator_chat_id": initiator_chat_id,
         },
     )

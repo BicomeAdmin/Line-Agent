@@ -41,6 +41,10 @@ from app.workflows.community_onboarding import (
 from app.workflows.style_harvest import harvest_style_samples as harvest_style_samples_workflow
 from app.workflows.dashboard import collect_dashboard_data, format_text_report
 from app.workflows.persona_context import get_persona_context as get_persona_context_workflow
+from app.workflows.voice_profile_setup import (
+    check_voice_profile as check_voice_profile_workflow,
+    update_voice_profile_section as update_voice_profile_section_workflow,
+)
 from app.workflows.send_metrics import get_send_metrics
 from app.storage.watches import (
     add_watch as watch_add,
@@ -512,6 +516,24 @@ def tool_add_community(
     )
 
 
+def tool_check_voice_profile(
+    community_id: str,
+    customer_id: str | None = None,
+) -> dict[str, Any]:
+    customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
+    return check_voice_profile_workflow(customer_id, community_id)
+
+
+def tool_update_voice_profile_section(
+    community_id: str,
+    section: str,
+    content: str,
+    customer_id: str | None = None,
+) -> dict[str, Any]:
+    customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
+    return update_voice_profile_section_workflow(customer_id, community_id, section, content)
+
+
 def tool_get_persona_context(
     community_id: str,
     customer_id: str | None = None,
@@ -891,6 +913,36 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
             patrol_interval_minutes=patrol_interval_minutes,
             persona=persona,
         ),
+    ),
+    (
+        "check_voice_profile",
+        "Diagnose how complete a community's voice_profile.md is. Returns completeness_pct (0-100), a `missing` list of sections still on placeholder values (nickname / personality / samples — the operator-must-fill ones), `has_harvested_block` flag, and `next_actions` with concrete commands to fix each gap. Use this when operator asks 「X 群 voice profile 還缺什麼」、「幫我看 X 群的人物設定完成了沒」、or 「怎麼讓 X 群的語氣檔完整」. After diagnosing, follow up with harvest_style_samples (for the auto-fillable part) and/or guide operator to provide nickname/personality (then call update_voice_profile_section).",
+        {
+            "type": "object",
+            "properties": {
+                "community_id": {"type": "string"},
+                "customer_id": {"type": "string"},
+            },
+            "required": ["community_id"],
+            "additionalProperties": False,
+        },
+        lambda community_id, customer_id=None, **_: tool_check_voice_profile(community_id=community_id, customer_id=customer_id),
+    ),
+    (
+        "update_voice_profile_section",
+        "Surgically update one named section of a community's voice_profile.md, preserving everything else (auto-harvested block, other sections, header). Use when operator says 「我在 X 群的暱稱叫 Y」 (section='nickname', content='Y') or 「我在 X 群的個性是 ...」 (section='personality') or 「我在 X 群想讓 bot 學這幾句：...」 (section='samples'). Valid section keys: nickname / personality / style_anchors / samples / off_limits. Chinese aliases like 暱稱 / 個性 / 樣本 / 風格 / 底線 also work. After update, the operator should see the change reflected in get_persona_context immediately.",
+        {
+            "type": "object",
+            "properties": {
+                "community_id": {"type": "string"},
+                "section": {"type": "string", "description": "Section key (nickname / personality / samples / style_anchors / off_limits) or Chinese alias (暱稱 / 個性 / 樣本 …)."},
+                "content": {"type": "string", "description": "The new body for that section. For multi-line content (e.g. personality), use newline-separated bullets prefixed with '- '."},
+                "customer_id": {"type": "string"},
+            },
+            "required": ["community_id", "section", "content"],
+            "additionalProperties": False,
+        },
+        lambda community_id, section, content, customer_id=None, **_: tool_update_voice_profile_section(community_id=community_id, section=section, content=content, customer_id=customer_id),
     ),
     (
         "get_persona_context",
