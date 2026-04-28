@@ -1,0 +1,12 @@
+community_id: openchat_005
+display_name: "Bicome，您的私域顧問"
+invite_url: "https://line.me/ti/g2/kvmqLQ35fXGFTqn4PtrWxFXvcka5klKmsJBUeA?utm_source=invitation&utm_medium=link_copy&utm_campaign=default"
+group_id: "kvmqLQ35fXGFTqn4PtrWxFXvcka5klKmsJBUeA"
+persona: default
+device_id: emulator-5554
+patrol_interval_minutes: 720
+enabled: true
+input_x: null
+input_y: null
+send_x: null
+send_y: null
