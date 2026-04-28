@@ -169,9 +169,39 @@ bash scripts/start_services.sh status    # 看誰在跑
 |---|---|---|
 | **小編發文模式** | 你（push from Lark） | `compose_and_send`、`approve_review`、`add_scheduled_post` |
 | **Watcher Phase 1** | 你問「看一下 X 群」（pull） | `analyze_chat` → bot 摘要狀態，**不自動 draft** |
-| Watcher Phase 2（未做） | 限時自動盯場 | TBD：`start_watch` / `stop_watch` |
+| **Watcher Phase 2（智能自主）** | 你說「看著 X 群」 | `start_watch` → daemon 自動 persona → select_reply_target → fingerprint → compose → 推卡片給操作員 |
 
-新增社群（自動 onboard）：操作員貼邀請連結 + 「幫我加這個群」→ `add_community` 自動 deep-link 抓標題、寫 YAML、bootstrap voice profile。
+### 新社群 onboarding SOP（標準流程，不可省）
+
+**「連自己是誰都不知道，怎麼做好用戶營運」** — 操作員 2026-04-29 講過的話。每個社群上線前必走這六步，缺一不可：
+
+```
+1. add_community(invite_url, display_name="...")
+     建 YAML + bootstrap voice_profile.md
+2. import_chat_export(community_id, file_path="~/Downloads/[LINE]xxx.txt")
+     操作員手動匯出 → bot 解析 → 抽 sender + 取自然語料
+     （比 UI 抓取多 10-100 倍且合規）
+3. refresh_member_fingerprints(community_id)
+     算每位成員的 avg_length / emoji_rate / 句尾語助詞
+4. **set_operator_nickname(community_id, nickname="...")** ← 最關鍵的一步
+     告訴 bot「我在這個群叫什麼名字」。LINE 在 chat 底下會顯示
+     「以「<暱稱>」加入聊天」——那就是要填的值。沒這個 bot 永遠
+     不知道哪則訊息是操作員自己的，自主回覆會崩壞（曾因此把
+     所有訊息誤判為自己、產生不合脈絡的草稿）。
+5. set_voice_profile / update_voice_profile_section（可選）
+     寫操作員想呈現的個性、Off-limits
+6. start_watch(community_id) — 開啟自主追蹤
+     daemon 在 10:00-22:00 內自主：persona 載入 → 篩選回覆對象
+     → fingerprint 鏡映風格 → 推卡片給操作員審核
+```
+
+**執行時 sender 辨識**：LINE chat XML 用以下 resource-id 表示訊息：
+- `chat_ui_message_text` = 訊息文字（任何發言者，包括操作員）
+- `chat_ui_row_sender` = 該訊息的發言者標籤
+- `chat_ui_sender_name` + `chat_ui_content_text` = 引用先前訊息的 reply quote box（**不是新訊息，要忽略**）
+- `x_left ≥ 40% 螢幕寬` 的 `chat_ui_message_text` = 操作員右側泡（自己發的）
+
+歷史教訓：第一版 parser 把 `chat_ui_message_text` 當作 SELF 的標誌，導致全部訊息被誤判為操作員自己——自主流程完全崩壞。修正後改用 `chat_ui_row_sender` 作為發言者來源 + x-bounds 檢測自己。
 
 ## 7. 已建立的 communities（使用者自己營運）
 

@@ -99,6 +99,26 @@ def patrol_community(community: CommunityConfig) -> dict[str, object]:
         append_audit_event(community.customer_id, "community_patrol_skipped", result)
         return result
 
+    # Rule-based draft generation (light_prompt / cold_spell / unanswered)
+    # has been retired in favor of the autonomous Watcher Phase 2 pipeline,
+    # which respects sender attribution + member fingerprints + persona
+    # context rather than generic "encourage engagement" templates.
+    # Patrol now defaults to observe-only — navigates, confirms LINE is
+    # in the right room, records audit, but does NOT generate drafts.
+    # Re-enable the legacy templates only via PATROL_DRAFTS_ENABLED=true.
+    import os
+    if os.getenv("PATROL_DRAFTS_ENABLED", "false").strip().lower() != "true":
+        result = {
+            "status": "observed_only",
+            "community_id": community.community_id,
+            "community_name": community.display_name,
+            "device_id": community.device_id,
+            "note": "rule-based patrol drafts disabled; autonomous watcher handles drafts",
+        }
+        scheduler_state.mark_completed(f"{community.customer_id}:{community.community_id}")
+        append_audit_event(community.customer_id, "community_patrol_observed_only", result)
+        return result
+
     draft = draft_reply_for_device(community.device_id, limit=20, community_id=community.community_id)
     decision = draft["decision"]
     scheduler_state.mark_completed(f"{community.customer_id}:{community.community_id}")

@@ -43,6 +43,11 @@ class CommunityConfig:
     coordinate_source: str = "missing"
     invite_url: str | None = None
     group_id: str | None = None
+    # Operator's display name in THIS community. Required for accurate
+    # self-detection when scoring chat-export-derived messages (where
+    # we don't have the runtime is_self flag from the LINE UI parser).
+    # E.g. operator might be "比利" in 愛美星 but "山寶" in 山納百景.
+    operator_nickname: str | None = None
 
 
 def load_devices_config() -> list[DeviceConfig]:
@@ -110,6 +115,7 @@ def load_community_config(customer_id: str, community_id: str) -> CommunityConfi
         send_y=_optional_int(payload.get("send_y")),
         invite_url=str(payload["invite_url"]) if isinstance(payload.get("invite_url"), str) and payload.get("invite_url") else None,
         group_id=str(payload["group_id"]) if isinstance(payload.get("group_id"), str) and payload.get("group_id") else None,
+        operator_nickname=str(payload["operator_nickname"]).strip() if isinstance(payload.get("operator_nickname"), str) and payload.get("operator_nickname") else None,
     )
     return _apply_runtime_calibration(config)
 
@@ -174,6 +180,7 @@ def _apply_runtime_calibration(config: CommunityConfig) -> CommunityConfig:
             coordinate_source=runtime.source,
             invite_url=config.invite_url,
             group_id=config.group_id,
+            operator_nickname=config.operator_nickname,
         )
 
     if None not in (config.input_x, config.input_y, config.send_x, config.send_y):
@@ -192,6 +199,7 @@ def _apply_runtime_calibration(config: CommunityConfig) -> CommunityConfig:
             coordinate_source="file",
             invite_url=config.invite_url,
             group_id=config.group_id,
+            operator_nickname=config.operator_nickname,
         )
 
     return config

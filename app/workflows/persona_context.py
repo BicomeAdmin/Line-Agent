@@ -65,7 +65,13 @@ def get_persona_context(
         except OSError:
             pass
 
-    nickname = _extract_nickname(voice_profile_text)
+    # Operator's nickname in THIS community is the authoritative source.
+    # Falls back to whatever was extracted from voice_profile.md only if
+    # operator_nickname isn't yet configured in the community YAML.
+    nickname = (
+        getattr(community, "operator_nickname", None)
+        or _extract_nickname(voice_profile_text)
+    )
     personality = _extract_personality(voice_profile_text)
     off_limits = _extract_off_limits(voice_profile_text)
     style_anchors = _extract_section(voice_profile_text, "Style anchors")
@@ -76,6 +82,30 @@ def get_persona_context(
         lookback_hours=self_posts_lookback_hours,
         limit=self_posts_limit,
     ))
+
+    # If we know operator_nickname AND there's a member-fingerprint cache
+    # (built from imported chat exports), augment with the operator's
+    # historical recent_lines. send_attempt audit only captures messages
+    # that went through OUR system; chat_export covers everything the
+    # operator said in this community.
+    if nickname:
+        try:
+            from app.workflows.member_fingerprint import get_member_fingerprint
+            fp = get_member_fingerprint(customer_id, community_id, nickname)
+            if fp and isinstance(fp.get("recent_lines"), list):
+                seen_texts = {p.get("text") for p in recent_self_posts}
+                for line in fp["recent_lines"]:
+                    if not line or line in seen_texts:
+                        continue
+                    recent_self_posts.append({
+                        "ts_epoch": None,
+                        "ts_taipei": "(from chat export)",
+                        "text": line,
+                    })
+                    if len(recent_self_posts) >= self_posts_limit:
+                        break
+        except Exception:  # noqa: BLE001 — augmentation is best-effort
+            pass
 
     summary_zh = _build_summary(
         customer_display=customer.display_name,

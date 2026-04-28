@@ -41,6 +41,10 @@ from app.workflows.community_onboarding import (
 from app.workflows.style_harvest import harvest_style_samples as harvest_style_samples_workflow
 from app.workflows.dashboard import collect_dashboard_data, format_text_report
 from app.workflows.persona_context import get_persona_context as get_persona_context_workflow
+from app.workflows.operator_identity import (
+    list_operator_identity as list_operator_identity_workflow,
+    set_operator_nickname as set_operator_nickname_workflow,
+)
 from app.workflows.chat_export_import import import_chat_export as import_chat_export_workflow
 from app.workflows.member_fingerprint import (
     get_member_fingerprint as get_member_fingerprint_workflow,
@@ -628,6 +632,19 @@ def tool_update_voice_profile_section(
     return update_voice_profile_section_workflow(customer_id, community_id, section, content)
 
 
+def tool_set_operator_nickname(
+    community_id: str,
+    nickname: str,
+    customer_id: str | None = None,
+) -> dict[str, Any]:
+    customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
+    return set_operator_nickname_workflow(customer_id, community_id, nickname)
+
+
+def tool_list_operator_identity(customer_id: str | None = None) -> dict[str, Any]:
+    return list_operator_identity_workflow(customer_id or "customer_a")
+
+
 def tool_get_persona_context(
     community_id: str,
     customer_id: str | None = None,
@@ -1110,6 +1127,31 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
             "additionalProperties": False,
         },
         lambda community_id, section, content, customer_id=None, **_: tool_update_voice_profile_section(community_id=community_id, section=section, content=content, customer_id=customer_id),
+    ),
+    (
+        "set_operator_nickname",
+        "Persist the operator's display name in a specific community to its YAML config (operator_nickname field). Required so the autonomous reply pipeline can identify which messages in chat-history exports are the operator's own — without it, persona_context can't compute recent_self_posts and the reply selector can't filter self-replies. Operator triggers: 「我在 X 群叫 Y」、「在 X 群我的暱稱是 Y」、「openchat_NNN 我叫 ...」.",
+        {
+            "type": "object",
+            "properties": {
+                "community_id": {"type": "string"},
+                "nickname": {"type": "string", "description": "Exact display name as it appears next to the operator's bubbles in LINE OpenChat. Often visible at the bottom of the chat as 「以「<名稱>」加入聊天」."},
+                "customer_id": {"type": "string"},
+            },
+            "required": ["community_id", "nickname"],
+            "additionalProperties": False,
+        },
+        lambda community_id, nickname, customer_id=None, **_: tool_set_operator_nickname(community_id=community_id, nickname=nickname, customer_id=customer_id),
+    ),
+    (
+        "list_operator_identity",
+        "Return a table of which communities have operator_nickname configured and which still need it. Useful when operator asks 「我每個群的暱稱分別是什麼」or as part of a general status check.",
+        {
+            "type": "object",
+            "properties": {"customer_id": {"type": "string"}},
+            "additionalProperties": False,
+        },
+        lambda customer_id=None, **_: tool_list_operator_identity(customer_id=customer_id),
     ),
     (
         "get_persona_context",
