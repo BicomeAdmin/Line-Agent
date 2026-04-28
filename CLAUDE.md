@@ -104,9 +104,22 @@
 
 ### 4.3 Daemon / 背景程序
 
+**完整啟動指南**：[`docs/project-echo/services-startup.md`](docs/project-echo/services-startup.md)
+
+一句話啟動三個服務（排程引擎 + Lark 長連線 + 本機儀表板）：
+```bash
+bash scripts/start_services.sh           # 啟動全部
+bash scripts/start_services.sh restart   # 重啟全部（改完代碼用這個）
+bash scripts/start_services.sh status    # 看誰在跑
+```
+
+要點：
 - `scripts/scheduler_daemon.py` 跑 30-60s loop。改了 scheduler / job_processor / workflow 後**必須重啟** daemon 拿到新代碼
-- Daemon log 在 `/tmp/claude-501/...tasks/<id>.output`，永遠 tail 確認 cycle 在跑
-- 改完 `.env` 後也要重啟（settings 是 module-level singleton）
+- Lark bridge 改了 framing / 卡片 handler 後也要重啟
+- MCP tool（`app/mcp/project_echo_server.py`）改了**不用**重啟，codex 每次 spawn MCP 都重新載入
+- 改 `.env` → 三個服務全部要 `restart`（settings 是 module-level singleton）
+- Log 在 `/tmp/scheduler_daemon.log` / `/tmp/lark_bridge.log` / `/tmp/web_dashboard.log`
+- 本機儀表板：http://localhost:8080（read-only，HIL 通道仍走 Lark / CLI）
 
 ---
 
