@@ -50,6 +50,7 @@
 - 威廉你點看看
 - 我看還是會在line裡面
 - 暗樁（安卓）正常
-自機（IOS）跳轉
 - (heart eyes Moon)
+- 暗樁（安卓）正常
+自機（IOS）跳轉
 <!-- END auto-harvested community lines -->
