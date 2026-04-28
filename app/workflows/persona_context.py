@@ -127,6 +127,18 @@ def get_persona_context(
     except Exception:  # noqa: BLE001
         pass
 
+    # Recent operator edits — Paul's "實時回饋優化". Bot uses these
+    # as in-context learning to mimic operator's preferences.
+    recent_edits: list[dict[str, object]] = []
+    edit_lessons_zh = ""
+    try:
+        from app.workflows.edit_feedback import load_recent_edits, render_for_prompt
+        recent_edits = load_recent_edits(customer_id, community_id, limit=5)
+        if recent_edits:
+            edit_lessons_zh = render_for_prompt(recent_edits)
+    except Exception:  # noqa: BLE001
+        pass
+
     return {
         "status": "ok",
         "summary_zh": summary_zh,
@@ -150,6 +162,8 @@ def get_persona_context(
         },
         "recent_self_posts": recent_self_posts,
         "koc_candidates": koc_candidates,  # top 5 high-leverage members
+        "recent_edits": recent_edits,
+        "edit_lessons_zh": edit_lessons_zh,  # ready-to-paste prompt section
     }
 
 

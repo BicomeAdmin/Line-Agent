@@ -155,8 +155,24 @@ def _process_lark_action(payload: dict[str, object]) -> dict[str, object]:
     elif action == "edit":
         edited_text = payload.get("edited_draft_text")
         if isinstance(edited_text, str) and edited_text.strip():
-            _update_review_from_action(job_id, payload, "pending_reapproval", draft_text=edited_text.strip())
-            result = _prepare_edited_review(job_id, source_job.result if source_job is not None else None, payload, edited_text.strip())
+            edited = edited_text.strip()
+            # Capture (original, edited) pair for the feedback loop —
+            # Paul's AI Step 4「實時回饋優化」 in CLAUDE.md §0.5.5.
+            try:
+                from app.workflows.edit_feedback import record_edit
+                review = review_store.get(job_id)
+                if review is not None:
+                    record_edit(
+                        review.customer_id,
+                        review.community_id,
+                        job_id,
+                        review.draft_text,  # the original BEFORE we overwrite below
+                        edited,
+                    )
+            except Exception:  # noqa: BLE001 — feedback recording must never break edit flow
+                pass
+            _update_review_from_action(job_id, payload, "pending_reapproval", draft_text=edited)
+            result = _prepare_edited_review(job_id, source_job.result if source_job is not None else None, payload, edited)
         else:
             _update_review_from_action(job_id, payload, "edit_required")
             result["status"] = "edit_required"
