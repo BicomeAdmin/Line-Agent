@@ -50,6 +50,10 @@ from app.workflows.kpi_tracker import (
     compute_community_kpis as compute_community_kpis_workflow,
     kpi_summary_for_dashboard as kpi_summary_workflow,
 )
+from app.workflows.relationship_graph import (
+    build_relationship_graph as build_relationship_graph_workflow,
+    load_relationship_graph as load_relationship_graph_workflow,
+)
 from app.workflows.member_fingerprint import (
     get_member_fingerprint as get_member_fingerprint_workflow,
     load_member_fingerprints as load_member_fingerprints_workflow,
@@ -529,6 +533,31 @@ def tool_add_community(
         patrol_interval_minutes=patrol_interval_minutes,
         persona=persona,
     )
+
+
+def tool_build_relationship_graph(
+    community_id: str,
+    customer_id: str | None = None,
+) -> dict[str, Any]:
+    customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
+    return build_relationship_graph_workflow(customer_id, community_id)
+
+
+def tool_get_koc_candidates(
+    community_id: str,
+    customer_id: str | None = None,
+    top_n: int = 10,
+) -> dict[str, Any]:
+    customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
+    snap = load_relationship_graph_workflow(customer_id, community_id)
+    if snap is None:
+        return _ok({"loaded": False, "hint": "請先 build_relationship_graph"})
+    return _ok({
+        "loaded": True,
+        "community_id": community_id,
+        "computed_at_taipei": snap.get("computed_at_taipei"),
+        "koc_candidates": (snap.get("koc_candidates") or [])[:top_n],
+    })
 
 
 def tool_compute_community_kpis(
@@ -1045,6 +1074,35 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
             patrol_interval_minutes=patrol_interval_minutes,
             persona=persona,
         ),
+    ),
+    (
+        "build_relationship_graph",
+        "Build the directed reply graph for a community from imported chat exports + compute KOC candidates per Paul's 用戶營運金字塔 (CLAUDE.md §0.5.3). Algorithm (inspired by github.com/asherkin/discograph): for each consecutive message pair within a 5-minute window, treat as a temporal-reply edge; aggregate weighted directed edges; rank nodes by 0.4·in_degree + 0.3·betweenness + 0.2·eigenvector + 0.1·out_degree (all normalized). Top 10 = KOC candidates. Auto-filters LINE system events (X 加入聊天 / 已收回訊息 etc.) and the operator themselves. Run after import_chat_export. Operator triggers: 「找 X 群的 KOC」、「X 群誰最重要」、「畫 X 群的關係圖」.",
+        {
+            "type": "object",
+            "properties": {
+                "community_id": {"type": "string"},
+                "customer_id": {"type": "string"},
+            },
+            "required": ["community_id"],
+            "additionalProperties": False,
+        },
+        lambda community_id, customer_id=None, **_: tool_build_relationship_graph(community_id=community_id, customer_id=customer_id),
+    ),
+    (
+        "get_koc_candidates",
+        "Quick read of cached KOC candidates from a previous build_relationship_graph run. Returns top-N members ranked by composite centrality score, with their in_degree / betweenness / eigenvector breakdowns. Used by bot during compose to know who to invest relationship in (per Paul's '1000 鐵粉' doctrine — these are the connectors who turn 1:1 chats into community).",
+        {
+            "type": "object",
+            "properties": {
+                "community_id": {"type": "string"},
+                "customer_id": {"type": "string"},
+                "top_n": {"type": "integer", "default": 10},
+            },
+            "required": ["community_id"],
+            "additionalProperties": False,
+        },
+        lambda community_id, customer_id=None, top_n=10, **_: tool_get_koc_candidates(community_id=community_id, customer_id=customer_id, top_n=top_n),
     ),
     (
         "compute_community_kpis",

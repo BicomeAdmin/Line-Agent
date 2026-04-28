@@ -116,6 +116,17 @@ def get_persona_context(
         recent_self_posts=recent_self_posts,
     )
 
+    # Top KOC candidates for this community — bot uses these to know
+    # who's high-leverage when scoring reply targets / composing.
+    koc_candidates: list[dict[str, object]] = []
+    try:
+        from app.workflows.relationship_graph import load_relationship_graph
+        graph = load_relationship_graph(customer_id, community_id)
+        if graph and graph.get("koc_candidates"):
+            koc_candidates = graph["koc_candidates"][:5]  # type: ignore[assignment]
+    except Exception:  # noqa: BLE001
+        pass
+
     return {
         "status": "ok",
         "summary_zh": summary_zh,
@@ -138,6 +149,7 @@ def get_persona_context(
             "raw_markdown": voice_profile_text,
         },
         "recent_self_posts": recent_self_posts,
+        "koc_candidates": koc_candidates,  # top 5 high-leverage members
     }
 
 
