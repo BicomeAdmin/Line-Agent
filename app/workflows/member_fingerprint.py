@@ -49,11 +49,24 @@ class MemberFingerprint:
     message_count: int = 0
     avg_length: float = 0.0
     median_length: float = 0.0
+    length_stddev: float = 0.0  # variance signature
     emoji_rate: float = 0.0
     top_opening_words: list[str] = field(default_factory=list)
     top_ending_particles: list[str] = field(default_factory=list)
     recent_lines: list[str] = field(default_factory=list)
     last_seen_date: str | None = None
+    # Stylometric extensions (Tier 2 #4 — function words, punctuation,
+    # line-break habits, typo signatures). These are richer authorship
+    # signals than the basic three; the reply-style mirror works much
+    # better with them.
+    function_word_freq: dict[str, float] = field(default_factory=dict)
+    punctuation_signature: dict[str, int] = field(default_factory=dict)
+    line_break_rate: float = 0.0  # newlines per message
+    multi_msg_burst_rate: float = 0.0  # ratio of consecutive same-sender messages
+    type_token_ratio: float = 0.0  # vocabulary diversity (MTLD-style)
+    typo_signature: dict[str, int] = field(default_factory=dict)
+    avg_punct_per_msg: float = 0.0
+    repeated_punct_rate: float = 0.0  # ratio of msgs with !! / ?? / ...
 
     def summary_zh(self) -> str:
         parts = [f"{self.sender} ({self.message_count} 則)"]
@@ -66,6 +79,10 @@ class MemberFingerprint:
             parts.append("不用 emoji")
         if self.top_ending_particles:
             parts.append(f"句尾常用「{'/'.join(self.top_ending_particles[:2])}」")
+        if self.line_break_rate > 0.5:
+            parts.append("愛換行")
+        if self.repeated_punct_rate > 0.15:
+            parts.append("常用!!/??")
         return "；".join(parts)
 
 
@@ -128,17 +145,146 @@ def _fingerprint_one(sender: str, items: list[ChatMessage], *, recent_n: int) ->
 
     last_seen = max((m.date for m in items if m.date), default=None)
 
+    # Stylometric extensions (Tier 2 #4) — function words, punctuation
+    # signature, line-break habit, typo patterns, vocabulary diversity.
+    length_stddev = float(statistics.pstdev(lengths)) if len(lengths) > 1 else 0.0
+    func_freq = _function_word_freq(texts)
+    punct_sig = _punctuation_signature(texts)
+    line_breaks = sum(t.count("\n") for t in texts)
+    line_break_rate = round(line_breaks / max(1, len(texts)), 3)
+    multi_burst = _multi_msg_burst_rate(items)
+    ttr = _type_token_ratio(texts)
+    typos = _typo_signature(texts)
+    avg_punct = round(sum(_count_all_punct(t) for t in texts) / max(1, len(texts)), 2)
+    repeated_punct = round(
+        sum(1 for t in texts if re.search(r"[!！?？]{2,}|\.{3,}|～{2,}", t)) / max(1, len(texts)),
+        3,
+    )
+
     return MemberFingerprint(
         sender=sender,
         message_count=len(texts),
         avg_length=round(avg, 1),
         median_length=median,
+        length_stddev=round(length_stddev, 1),
         emoji_rate=emoji_rate,
         top_opening_words=top_opens,
         top_ending_particles=top_ends,
         recent_lines=recent_lines,
         last_seen_date=last_seen,
+        function_word_freq=func_freq,
+        punctuation_signature=punct_sig,
+        line_break_rate=line_break_rate,
+        multi_msg_burst_rate=multi_burst,
+        type_token_ratio=ttr,
+        typo_signature=typos,
+        avg_punct_per_msg=avg_punct,
+        repeated_punct_rate=repeated_punct,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Stylometric feature extractors (Tier 2 #4)
+# ──────────────────────────────────────────────────────────────────────
+
+# Function words / particles that carry strong authorship signal in
+# zh-TW chat. These are the "tell" of how someone talks regardless of
+# topic — virtually impossible to consciously fake when composing in
+# someone else's voice.
+_FUNCTION_WORDS = (
+    "啊", "喔", "欸", "哈", "吧", "嗎", "呢", "啦", "耶", "齁", "誒",
+    "捏", "齁", "唉", "嗯", "哎", "嘿", "诶",
+    "我", "你", "他", "她", "我們", "你們", "他們",
+    "對", "好", "嗯", "可以", "不過", "其實", "然後",
+    "真的", "這樣", "那種", "還好", "就是", "不是",
+)
+
+# Common punctuation marks tracked separately because their frequencies
+# diverge wildly across speakers (some use !!! everywhere, others never).
+_PUNCT_MARKS = ("！", "!", "？", "?", "～", "~", "。", "，", ",", "...", "…", "、")
+
+
+def _function_word_freq(texts: list[str]) -> dict[str, float]:
+    """Frequency per 100 chars for each tracked function word."""
+    if not texts:
+        return {}
+    total_chars = sum(len(t) for t in texts) or 1
+    out: dict[str, float] = {}
+    for w in _FUNCTION_WORDS:
+        count = sum(t.count(w) for t in texts)
+        if count > 0:
+            out[w] = round(count * 100 / total_chars, 3)
+    return dict(sorted(out.items(), key=lambda kv: kv[1], reverse=True)[:12])
+
+
+def _punctuation_signature(texts: list[str]) -> dict[str, int]:
+    """Total counts per punctuation mark across this sender's messages."""
+    out: dict[str, int] = {}
+    for mark in _PUNCT_MARKS:
+        c = sum(t.count(mark) for t in texts)
+        if c > 0:
+            out[mark] = c
+    return out
+
+
+def _count_all_punct(text: str) -> int:
+    return sum(text.count(p) for p in _PUNCT_MARKS)
+
+
+def _multi_msg_burst_rate(items: list) -> float:
+    """Ratio of messages that immediately follow another from the same
+    sender (a "burst" pattern). Some people send 1 message at a time,
+    others spam-fire 3-4 short msgs in a row — strong style signal."""
+    if len(items) < 2:
+        return 0.0
+    bursts = 0
+    for i in range(1, len(items)):
+        if items[i].sender == items[i - 1].sender:
+            bursts += 1
+    return round(bursts / (len(items) - 1), 3)
+
+
+def _type_token_ratio(texts: list[str]) -> float:
+    """Vocabulary diversity: distinct 2-char Han bigrams / total bigrams.
+    Higher = more varied vocabulary. Approximation of MTLD without
+    needing word segmentation."""
+    bigrams: list[str] = []
+    for t in texts:
+        han_runs = re.findall(r"[一-鿿]+", t)
+        for run in han_runs:
+            for i in range(len(run) - 1):
+                bigrams.append(run[i : i + 2])
+    if not bigrams:
+        return 0.0
+    return round(len(set(bigrams)) / len(bigrams), 3)
+
+
+# Common 注音文 / typo patterns specific to Mandarin chat.
+# When someone uses 「ㄉ」for「的」or 「醬」for「這樣」, that's an
+# extremely strong style fingerprint.
+_TYPO_PATTERNS = {
+    "注音文_ㄉ": r"ㄉ(?![a-zA-Z])",
+    "注音文_ㄅ": r"ㄅ(?![a-zA-Z])",
+    "注音文_ㄋ": r"ㄋ(?![a-zA-Z])",
+    "醬_for_這樣": r"醬",
+    "降_for_這樣": r"降(?!水|低|溫)",  # exclude 降水/降低/降溫
+    "蝦米_for_什麼": r"蝦米",
+    "粉_for_很": r"粉(?!紅|碎|末|筆)",  # exclude common compounds
+    "省略主詞": r"^[一-鿿]{1,2}",  # placeholder; not really a typo, but signal
+}
+
+
+def _typo_signature(texts: list[str]) -> dict[str, int]:
+    """Count occurrences of common 注音文 / chat-typo patterns."""
+    out: dict[str, int] = {}
+    for label, pattern in _TYPO_PATTERNS.items():
+        if label == "省略主詞":
+            continue  # skip — too common to be a real signal
+        compiled = re.compile(pattern)
+        c = sum(len(compiled.findall(t)) for t in texts)
+        if c > 0:
+            out[label] = c
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────
