@@ -92,7 +92,21 @@ def extract_reply_target(payload: dict[str, object]) -> dict[str, str] | None:
 
 
 def extract_card_action(payload: dict[str, object]) -> dict[str, object] | None:
+    """Extract the actionable bits from a Lark card.action.trigger payload.
+
+    Accepts both schemas:
+      - v1 webhook (`action` at top level) — historical HTTP callback shape.
+      - v2 long-connection (`event.action`) — what lark-oapi WsClient delivers.
+    """
+
     action = payload.get("action")
+    if not isinstance(action, dict):
+        # v2 long-connection: action lives under event.
+        event = payload.get("event")
+        if isinstance(event, dict):
+            event_action = event.get("action")
+            if isinstance(event_action, dict):
+                action = event_action
     if not isinstance(action, dict):
         return None
     value = action.get("value")

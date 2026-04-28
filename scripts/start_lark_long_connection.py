@@ -359,7 +359,12 @@ def _extract_codex_tail(stdout: str) -> str:
 def _on_card_action(typed_event) -> object:
     payload = _to_dict(typed_event)
     print(f"[bridge] card action trigger", flush=True)
+    print(f"[bridge]   payload keys={list(payload.keys())}", flush=True)
     try:
+        # Diagnostic: dump first 500 chars of payload so we can see the
+        # actual shape long-connection delivers (differs from v1 webhook).
+        import json as _json
+        print(f"[bridge]   payload preview: {_json.dumps(payload, ensure_ascii=False, default=str)[:500]}", flush=True)
         response = enqueue_lark_action(payload)
         print(f"[bridge]   → {response}", flush=True)
     except Exception as exc:  # noqa: BLE001
