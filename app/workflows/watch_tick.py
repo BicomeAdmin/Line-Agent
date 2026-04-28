@@ -125,16 +125,40 @@ def _tick_one(watch: dict[str, object]) -> dict[str, object]:
             "codex_summary": (composed or "")[:140],
         },
     )
-    # Push notification to initiator's Lark, if known.
+    # Push notification to initiator's Lark, if known. Prefer an interactive
+    # review card (so the operator can [通過/修改/忽略] from the notification
+    # itself) when we can pinpoint the review the auto-watch just created.
     initiator_chat_id = watch.get("initiator_chat_id")
     if isinstance(initiator_chat_id, str) and initiator_chat_id and composed:
+        review_id, draft_text = _find_recent_auto_watch_review(customer_id, community_id)
         try:
-            LarkClient().send_message(
-                initiator_chat_id,
-                "text",
-                {"text": f"🛎 watch tick（{community.display_name}）：{composed[:300]}"},
-                receive_id_type="chat_id",
-            )
+            client = LarkClient()
+            if review_id and draft_text:
+                from app.lark.cards import build_review_card
+                from app.storage.config_loader import load_customer_config
+
+                customer = load_customer_config(customer_id)
+                card = build_review_card(
+                    customer_name=customer.display_name,
+                    community_name=community.display_name,
+                    draft=draft_text,
+                    job_id=review_id,
+                    customer_id=customer_id,
+                    community_id=community_id,
+                    device_id=community.device_id,
+                    reason="auto_watch",
+                    confidence=None,
+                    draft_title="🛎 自動追蹤 — 待審核",
+                )
+                client.send_card(initiator_chat_id, card, receive_id_type="chat_id")
+            else:
+                # Fallback to plain text when we can't link a specific review.
+                client.send_message(
+                    initiator_chat_id,
+                    "text",
+                    {"text": f"🛎 watch tick（{community.display_name}）：{composed[:300]}"},
+                    receive_id_type="chat_id",
+                )
         except LarkClientError as exc:
             append_audit_event(customer_id, "watch_lark_notify_failed", {"watch_id": watch_id, "error": str(exc)})
 
@@ -146,6 +170,28 @@ def _tick_one(watch: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _find_recent_auto_watch_review(customer_id: str, community_id: str) -> tuple[str | None, str | None]:
+    """Find the most recent auto_watch-sourced review for this community
+    that's still active (pending/edit_required/pending_reapproval). Used to
+    pin the right review_id onto the notification card the daemon pushes.
+    """
+
+    from app.core.reviews import ACTIVE_REVIEW_STATUSES, review_store
+
+    candidates = [
+        r for r in review_store.list_all()
+        if r.customer_id == customer_id
+        and r.community_id == community_id
+        and r.status in ACTIVE_REVIEW_STATUSES
+        and (r.reason or "").startswith("mcp_compose")  # any LLM-composed
+    ]
+    if not candidates:
+        return None, None
+    candidates.sort(key=lambda r: r.created_at, reverse=True)
+    latest = candidates[0]
+    return latest.review_id, latest.draft_text
+
+
 WATCH_PROMPT_TEMPLATE = (
     "你正在替使用者「自動追蹤」社群「{community_name}」({community_id})。\n"
     "規則：\n"
@@ -153,6 +199,7 @@ WATCH_PROMPT_TEMPLATE = (
     "2. 對照使用者最近送出的內容（你會在訊息看到 send_attempt 紀錄）：\n"
     "   - 如果有新成員針對使用者的話**直接接話**（@提及、引用、或內容明顯相關），**就 compose_and_send 一句自然回覆**。\n"
     "   - 風格：成員身份，遵守 voice_profile，短句、口語、不客套、不廣播。compose 前必先 get_voice_profile。\n"
+    "   - 呼叫 compose_and_send 時**必須帶 `source=\"auto_watch\"`**，這樣 send 統計才能正確分類為自動發送。\n"
     "3. 若**沒有人針對使用者回覆**，或話題不需要回（例如別人在自己對話），**這一輪就不要 compose**——\n"
     "   只回一行繁中說明「本輪沒值得補的回覆，本輪略過」。\n"
     "4. 不要連發、不要主動拉新話題（這條留給下一個 Phase）。\n"

@@ -1,0 +1,17 @@
+[
+  {
+    "watch_id": "watch-1777359853-openchat_003",
+    "customer_id": "customer_a",
+    "community_id": "openchat_003",
+    "started_at_epoch": 1777359853.70346,
+    "end_at_epoch": 1777363453.70346,
+    "initiator_chat_id": "oc_c173c06f9e4d383d4f3d775cb44f296d",
+    "cooldown_seconds": 300,
+    "poll_interval_seconds": 60,
+    "last_check_epoch": 1777361358.381539,
+    "last_seen_signature": "3d072d45f66af6f1",
+    "last_draft_epoch": 1777359897.8604429,
+    "status": "active",
+    "note": "操作員要求追蹤山納百景"
+  }
+]

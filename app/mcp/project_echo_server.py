@@ -35,6 +35,7 @@ from app.workflows.acceptance_status import get_acceptance_status
 from app.workflows.action_queue import get_action_queue
 from app.workflows.analyze_chat import analyze_chat as analyze_chat_workflow
 from app.workflows.community_onboarding import add_community as add_community_workflow
+from app.workflows.send_metrics import get_send_metrics
 from app.storage.watches import (
     add_watch as watch_add,
     list_watches as watch_list,
@@ -148,6 +149,7 @@ def tool_compose_and_send(
     *,
     auto_approve: bool = False,
     note: str | None = None,
+    source: str = "operator",
 ) -> dict[str, Any]:
     """Stage an LLM-composed message as a pending review.
 
@@ -171,6 +173,8 @@ def tool_compose_and_send(
     # Synthesize a job-style identity so the existing review_store / approval
     # pathway can pick this up. The "job_id" used as review_id is generated here
     # from the registry to keep the audit trail unified with other origin paths.
+    # `source` distinguishes operator-initiated (default) from auto_watch (Phase 2)
+    # so the metrics workflow can break stats down by trigger.
     job = job_registry.enqueue(
         "mcp_compose",
         {
@@ -178,7 +182,7 @@ def tool_compose_and_send(
             "community_id": community_id,
             "device_id": community.device_id,
             "draft_text": text,
-            "source": "mcp_compose_and_send",
+            "source": source,
             "note": note,
         },
     )
@@ -224,6 +228,7 @@ def tool_compose_and_send(
             "community_id": community_id,
             "text_preview": text[:60],
             "note": note,
+            "source": source,
         },
     )
 
@@ -405,6 +410,27 @@ def tool_cancel_scheduled_post(
 
 def tool_validate_openchat(community_id: str | None = None) -> dict[str, Any]:
     return validate_openchat_session(community_id=community_id)
+
+
+def tool_send_stats(
+    customer_id: str | None = None,
+    since_hours: float = 24.0,
+    community_id: str | None = None,
+) -> dict[str, Any]:
+    cid = customer_id or "customer_a"
+    return get_send_metrics(cid, since_hours=since_hours, community_id=community_id)
+
+
+def tool_list_recent_auto_fires(
+    customer_id: str | None = None,
+    since_hours: float = 24.0,
+) -> dict[str, Any]:
+    cid = customer_id or "customer_a"
+    metrics = get_send_metrics(cid, since_hours=since_hours)
+    return _ok({
+        "since_hours": since_hours,
+        "auto_fires": metrics.get("auto_fires", []),
+    })
 
 
 def tool_start_watch(
@@ -632,7 +658,7 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
     ),
     (
         "compose_and_send",
-        "Stage a message for human review. The text lands as a pending review_card; the operator must call approve_review (or tap Lark Approve) before anything is sent. NEVER bypasses human approval.",
+        "Stage a message for human review. The text lands as a pending review_card; the operator must call approve_review (or tap Lark Approve) before anything is sent. NEVER bypasses human approval. Pass `source` so metrics can break stats down: 'operator' (default — direct user request), 'auto_watch' (called from a Phase-2 watch tick), 'scheduled_post' (auto-fired from add_scheduled_post).",
         {
             "type": "object",
             "properties": {
@@ -640,11 +666,12 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
                 "text": {"type": "string", "description": "The exact message to send. Use Traditional Chinese (zh-TW) for Taiwan communities."},
                 "customer_id": {"type": "string"},
                 "note": {"type": "string", "description": "Optional internal note for audit trail (not sent)."},
+                "source": {"type": "string", "enum": ["operator", "auto_watch", "scheduled_post"], "default": "operator"},
             },
             "required": ["community_id", "text"],
             "additionalProperties": False,
         },
-        lambda community_id, text, customer_id=None, note=None, **_: tool_compose_and_send(community_id=community_id, text=text, customer_id=customer_id, note=note),
+        lambda community_id, text, customer_id=None, note=None, source="operator", **_: tool_compose_and_send(community_id=community_id, text=text, customer_id=customer_id, note=note, source=source),
     ),
     (
         "list_pending_reviews",
@@ -690,6 +717,33 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
             "additionalProperties": False,
         },
         lambda community_id=None, **_: tool_validate_openchat(community_id=community_id),
+    ),
+    (
+        "send_stats",
+        "Aggregate send-pipeline metrics for the operator: drafts created / sent / ignored / pending, broken down by community AND by source (operator / auto_watch / scheduled_post). Includes recent send_attempts and avg compose-to-send latency. Use when operator says 「最近發了多少」「哪些是自動發的」「成功率多少」「stats」「統計一下」.",
+        {
+            "type": "object",
+            "properties": {
+                "customer_id": {"type": "string"},
+                "since_hours": {"type": "number", "default": 24, "description": "Window. 24 = last day, 168 = last week."},
+                "community_id": {"type": "string", "description": "Optional filter."},
+            },
+            "additionalProperties": False,
+        },
+        lambda customer_id=None, since_hours=24, community_id=None, **_: tool_send_stats(customer_id=customer_id, since_hours=since_hours, community_id=community_id),
+    ),
+    (
+        "list_recent_auto_fires",
+        "List recent Watcher Phase 2 auto-fires (when daemon spawned codex on its own to draft a reply). Shows fire time, community, codex's summary, and the linked review with current status. Use when operator says 「最近自動寫了什麼」「watcher 抓到什麼」「auto_watch 紀錄」.",
+        {
+            "type": "object",
+            "properties": {
+                "customer_id": {"type": "string"},
+                "since_hours": {"type": "number", "default": 24},
+            },
+            "additionalProperties": False,
+        },
+        lambda customer_id=None, since_hours=24, **_: tool_list_recent_auto_fires(customer_id=customer_id, since_hours=since_hours),
     ),
     (
         "start_watch",
