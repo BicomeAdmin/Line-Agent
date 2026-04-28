@@ -97,33 +97,37 @@ def parse_line_export(file_path: str | Path) -> list[ChatMessage]:
 
 
 def _build_sender_set(lines: list[str]) -> set[str]:
-    """Find all plausible sender names. We greedily try 1-, 2-, and
-    3-token prefixes after the time stamp; tokens that consistently
-    start message lines (count >= 2 OR appear with a known badge) are
-    added to the sender set."""
+    """Find all plausible sender names. Two-pass:
+      Pass 1: collect 1-token candidates that appear >= 2 times as
+              line starters — these are the actual display names.
+      Pass 2: 2-token candidates are only accepted when the second
+              token is a known role badge (本尊 / 副管 / etc).
+              Plain 2-token candidates are rejected because LINE
+              inserts content placeholders like 「圖片」「貼圖」「影片」
+              after the sender name, which would otherwise look like
+              "<sender> <placeholder>" sender candidates and beat the
+              real 1-token name in longest-match attribution.
+    """
 
-    candidates: Counter[str] = Counter()
+    one_tok: Counter[str] = Counter()
+    two_tok_with_badge: Counter[str] = Counter()
     for line in lines:
         m = _MESSAGE_START_RE.match(line)
         if not m:
             continue
-        rest = m.group(3)
-        tokens = rest.split()
-        # Only 1- and 2-token prefixes — 3-token names are rare and
-        # over-eager matching of content would break attribution.
-        for n in (2, 1):
-            if len(tokens) >= n:
-                candidates[" ".join(tokens[:n])] += 1
+        tokens = m.group(3).split()
+        if not tokens:
+            continue
+        one_tok[tokens[0]] += 1
+        if len(tokens) >= 2 and tokens[1] in _ROLE_BADGES:
+            two_tok_with_badge[" ".join(tokens[:2])] += 1
 
     sender_set: set[str] = set()
-    # Auto-include: any prefix that matches a "<name> <badge>" pattern, OR
-    # appears at the start of >=2 message lines.
-    for name, count in candidates.items():
-        toks = name.split()
-        if len(toks) == 2 and toks[1] in _ROLE_BADGES:
+    for name, count in one_tok.items():
+        if count >= 2:
             sender_set.add(name)
-        elif count >= 2:
-            sender_set.add(name)
+    for name in two_tok_with_badge:
+        sender_set.add(name)
     return sender_set
 
 
