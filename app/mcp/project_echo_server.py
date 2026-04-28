@@ -40,6 +40,7 @@ from app.workflows.community_onboarding import (
 )
 from app.workflows.style_harvest import harvest_style_samples as harvest_style_samples_workflow
 from app.workflows.dashboard import collect_dashboard_data, format_text_report
+from app.workflows.persona_context import get_persona_context as get_persona_context_workflow
 from app.workflows.send_metrics import get_send_metrics
 from app.storage.watches import (
     add_watch as watch_add,
@@ -511,6 +512,14 @@ def tool_add_community(
     )
 
 
+def tool_get_persona_context(
+    community_id: str,
+    customer_id: str | None = None,
+) -> dict[str, Any]:
+    customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
+    return get_persona_context_workflow(customer_id, community_id)
+
+
 def tool_get_status_digest(
     customer_id: str | None = None,
     compact: bool = True,
@@ -716,7 +725,7 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
     ),
     (
         "compose_and_send",
-        "Stage a message for human review. The text lands as a pending review_card; the operator must call approve_review (or tap Lark Approve) before anything is sent. NEVER bypasses human approval.\n\n**Conversation-context check is REQUIRED before calling this tool.** Before composing, you MUST have already called read_recent_chat (or analyze_chat) and confirmed: (a) which specific message in the chat you are responding to, (b) that message is actually directed at the user (mention / quote / clear context), AND (c) the user hasn't already answered or moved on. If you cannot point to a specific message and explain why your draft is the natural next reply, do NOT compose — say 「沒有合適的脈絡可以接，不擬稿」 and stop. Drafts produced without a clear conversation anchor read as bot self-talk and damage the operator's standing in the community.\n\nPass `source` so metrics can break stats down: 'operator' (default — direct user request), 'auto_watch' (called from a Phase-2 watch tick), 'scheduled_post' (auto-fired from add_scheduled_post).",
+        "Stage a message for human review. The text lands as a pending review_card; the operator must call approve_review (or tap Lark Approve) before anything is sent. NEVER bypasses human approval.\n\n**Conversation-context check is REQUIRED — TWO conditions, both mandatory:**\n  (1) **Specific anchor**: you must already have called read_recent_chat (or analyze_chat) and be able to point to a specific message you're responding to (mention / quote / clear context) AND explain why your draft is the natural next reply.\n  (2) **User-continuity**: the draft must continue something the user themselves has already said in this community — same thread, same stance, same voice. Real members reference what they previously posted; they don't invent new positions out of nowhere. Sources for what the user has said: voice_profile.md (their nickname, style, sample lines, stated stance) and audit log send_attempt entries (their actual recent posts).\n\nIf either condition fails, refuse: say 「沒有合適的脈絡可以接，不擬稿」 and explicitly name which check failed (no anchor / user hasn't been part of this thread / user's recent stance doesn't match this draft). Drafts that violate (1) read as bot self-talk; drafts that violate (2) read as the bot putting words in the user's mouth — both damage the operator's standing in the community.\n\nPass `source` so metrics can break stats down: 'operator' (default — direct user request), 'auto_watch' (called from a Phase-2 watch tick), 'scheduled_post' (auto-fired from add_scheduled_post).",
         {
             "type": "object",
             "properties": {
@@ -882,6 +891,20 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
             patrol_interval_minutes=patrol_interval_minutes,
             persona=persona,
         ),
+    ),
+    (
+        "get_persona_context",
+        "Load the persona bundle for a (customer × community) pair: account display name, community display name, voice profile (nickname / personality / style anchors / off-limits), and recent self-posts (last 7 days of send_attempt audit entries for this community). The result includes a `summary_zh` field — a one-line Chinese summary the LLM should ECHO BACK VERBATIM to the operator before composing, so the operator sees confirmation that the right persona was loaded. **You MUST call this tool before compose_and_send** in any community — it's the persistent memory layer that prevents drafting in the wrong voice or inventing positions the user never took. Operator triggers: 「在 X 群我目前的設定是什麼」、「show me my persona for X」.",
+        {
+            "type": "object",
+            "properties": {
+                "community_id": {"type": "string"},
+                "customer_id": {"type": "string"},
+            },
+            "required": ["community_id"],
+            "additionalProperties": False,
+        },
+        lambda community_id, customer_id=None, **_: tool_get_persona_context(community_id=community_id, customer_id=customer_id),
     ),
     (
         "get_status_digest",

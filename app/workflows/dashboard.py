@@ -29,6 +29,7 @@ from app.core.timezone import to_taipei_str
 from app.storage.config_loader import load_all_communities
 from app.storage.paths import customer_root, voice_profile_path
 from app.storage.watches import list_active_watches_all_customers
+from app.workflows.persona_context import get_persona_context
 from app.workflows.send_metrics import get_send_metrics
 
 
@@ -62,6 +63,18 @@ def collect_dashboard_data(customer_id: str = "customer_a") -> dict[str, object]
         community_watch = next(
             (w for w in summarized_watches if w.get("community_id") == cid), None
         )
+        # Persona summary — 1-line "你在這群是 X，最近講過 Y" — so the
+        # operator sees at a glance which communities have a real persona
+        # vs which still have a stub voice profile.
+        try:
+            persona = get_persona_context(customer_id, cid)
+            persona_summary = persona.get("summary_zh") if persona.get("status") == "ok" else None
+            persona_nickname = (persona.get("voice_profile") or {}).get("nickname") or ""
+            recent_count = len(persona.get("recent_self_posts") or [])
+        except Exception:  # noqa: BLE001
+            persona_summary = None
+            persona_nickname = ""
+            recent_count = 0
         communities.append({
             "community_id": cid,
             "display_name": community.display_name,
@@ -69,6 +82,9 @@ def collect_dashboard_data(customer_id: str = "customer_a") -> dict[str, object]
             "voice_profile_harvested": vp_harvested,
             "pending_reviews": community_pending,
             "active_watch": community_watch,
+            "persona_nickname": persona_nickname,
+            "persona_recent_post_count": recent_count,
+            "persona_summary_zh": persona_summary,
         })
 
     # Pending review aging — biggest age in hours, used by daemon for alerts.

@@ -125,12 +125,12 @@ HTML_PAGE = """<!doctype html>
   <section class="panel"><h2>🩺 系統健康</h2><div id="health"></div></section>
   <section class="panel"><h2>📨 24h 送發統計</h2><div id="metrics"></div></section>
   <section class="panel full"><h2>🌐 社群</h2><div id="communities"></div></section>
-  <section class="panel"><h2>📥 待審 inbox</h2><div id="inbox"></div></section>
-  <section class="panel"><h2>⏰ Active watches</h2><div id="watches"></div></section>
-  <section class="panel full"><h2>🛎 最近 auto-fires</h2><div id="auto-fires"></div></section>
-  <section class="panel full"><h2>📋 即時事件流（audit log tail）</h2><div id="events" class="events"></div></section>
+  <section class="panel"><h2>📥 待審清單</h2><div id="inbox"></div></section>
+  <section class="panel"><h2>⏰ 追蹤中</h2><div id="watches"></div></section>
+  <section class="panel full"><h2>🛎 最近自動擬稿</h2><div id="auto-fires"></div></section>
+  <section class="panel full"><h2>📋 即時事件流</h2><div id="events" class="events"></div></section>
 </main>
-<footer>Project Echo dashboard · localhost only · 純讀取，不改狀態</footer>
+<footer>Project Echo 儀表板 · 僅限本機（localhost） · 純讀取，不會改變系統狀態</footer>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -160,10 +160,11 @@ function renderSnapshot(d) {
   // Health
   const h = d.health || {};
   const healthRows = Object.entries(h).map(([name, info]) => {
+    const label = ({scheduler_daemon: "排程引擎", lark_bridge: "Lark 長連線", web_dashboard: "本機儀表板"})[name] || name;
     if (info.running) {
-      return `<tr><td>${escape(name)}</td><td><span class="badge good">running</span></td><td>PID ${escape(info.pid)}</td><td>${escape(info.etime || "?")}</td></tr>`;
+      return `<tr><td>${escape(name)}</td><td>${escape(label)}</td><td><span class="badge good">在跑</span></td><td>PID ${escape(info.pid)}</td><td>${escape(info.etime || "?")}</td></tr>`;
     }
-    return `<tr><td>${escape(name)}</td><td><span class="badge bad">down</span></td><td colspan=2></td></tr>`;
+    return `<tr><td>${escape(name)}</td><td>${escape(label)}</td><td><span class="badge bad">未跑</span></td><td colspan=2></td></tr>`;
   }).join("");
   $("health").innerHTML = `<table>${healthRows}</table>`;
 
@@ -173,32 +174,36 @@ function renderSnapshot(d) {
   const sourceLine = Object.entries(sources).map(([k,v]) => `${escape(k)}=${v}`).join("&nbsp;&nbsp;");
   $("metrics").innerHTML = `
     <div class="metric">
-      <div><div class="num">${t.drafts_created ?? 0}</div><div class="label">drafts</div></div>
-      <div><div class="num">${t.sent ?? 0}</div><div class="label">sent</div></div>
-      <div><div class="num">${t.ignored ?? 0}</div><div class="label">ignored</div></div>
-      <div><div class="num">${t.review_pending ?? 0}</div><div class="label">pending</div></div>
+      <div><div class="num">${t.drafts_created ?? 0}</div><div class="label">草稿</div></div>
+      <div><div class="num">${t.sent ?? 0}</div><div class="label">已送</div></div>
+      <div><div class="num">${t.ignored ?? 0}</div><div class="label">已忽略</div></div>
+      <div><div class="num">${t.review_pending ?? 0}</div><div class="label">待審</div></div>
     </div>
-    ${sourceLine ? `<div style="margin-top:10px; color:var(--muted); font-size:11px;">by source: ${sourceLine}</div>` : ""}
+    ${sourceLine ? `<div style="margin-top:10px; color:var(--muted); font-size:11px;">來源：${sourceLine}</div>` : ""}
   `;
 
   // Communities
   const cs = d.communities || [];
   $("communities").innerHTML = cs.length ? `<table>
-    <tr><th>community</th><th>name</th><th>voice profile</th><th>watch</th><th>pending</th></tr>
+    <tr><th>社群代號</th><th>中文名稱</th><th>暱稱</th><th>近 7 天發言</th><th>語氣檔</th><th>追蹤中</th><th>待審</th></tr>
     ${cs.map(c => {
       const vp = c.voice_profile_harvested
-        ? `<span class="badge good">harvested</span> <span class="muted">${c.voice_profile_lines} 行</span>`
-        : `<span class="badge muted">stub</span> <span class="muted">${c.voice_profile_lines} 行</span>`;
+        ? `<span class="badge good">已採集</span> <span class="muted">${c.voice_profile_lines} 行</span>`
+        : `<span class="badge muted">待補</span> <span class="muted">${c.voice_profile_lines} 行</span>`;
+      const nick = c.persona_nickname ? escape(c.persona_nickname) : `<span class="muted">未設定</span>`;
+      const recent = c.persona_recent_post_count > 0
+        ? `<span class="badge muted">${c.persona_recent_post_count} 句</span>`
+        : `<span class="muted">—</span>`;
       const w = c.active_watch ? `<span class="badge warn">⏰ ${c.active_watch.remaining_minutes}m</span>` : "";
       const p = c.pending_reviews ? `<span class="badge warn">${c.pending_reviews}</span>` : "";
-      return `<tr><td>${escape(c.community_id)}</td><td>${escape(c.display_name)}</td><td>${vp}</td><td>${w}</td><td>${p}</td></tr>`;
+      return `<tr><td>${escape(c.community_id)}</td><td>${escape(c.display_name)}</td><td>${nick}</td><td>${recent}</td><td>${vp}</td><td>${w}</td><td>${p}</td></tr>`;
     }).join("")}
-  </table>` : `<div class="empty">無社群配置</div>`;
+  </table>` : `<div class="empty">尚未配置任何社群</div>`;
 
   // Inbox
   const inbox = d.pending_reviews || [];
   $("inbox").innerHTML = inbox.length ? `<table>
-    <tr><th>review_id</th><th>社群</th><th>草稿</th><th>等待</th><th>動作</th></tr>
+    <tr><th>編號</th><th>社群</th><th>草稿</th><th>等待</th><th>動作</th></tr>
     ${inbox.map(p => {
       const age = p.age_hours >= 1 ? `${Math.floor(p.age_hours)}h` : `${Math.floor(p.age_seconds/60)}m`;
       const ageBadge = p.age_hours >= 4 ? "bad" : p.age_hours >= 2 ? "warn" : "muted";
@@ -210,7 +215,7 @@ function renderSnapshot(d) {
         <td><button class="btn-ignore" data-id="${escape(p.review_id)}" data-preview="${escape(p.draft_text).slice(0,40)}">忽略</button></td>
       </tr>`;
     }).join("")}
-  </table>` : `<div class="empty">無待審 ✅</div>`;
+  </table>` : `<div class="empty">目前沒有待審 ✅</div>`;
   // Wire ignore buttons (re-attach each render since innerHTML rebuilds DOM).
   document.querySelectorAll(".btn-ignore").forEach(btn => {
     btn.addEventListener("click", async () => {
@@ -240,21 +245,21 @@ function renderSnapshot(d) {
   // Watches
   const ws = d.active_watches || [];
   $("watches").innerHTML = ws.length ? `<table>
-    <tr><th>community</th><th>剩餘</th><th>上次 check</th></tr>
-    ${ws.map(w => `<tr><td>${escape(w.community_id)}</td><td>${escape(w.remaining_minutes)}m</td><td>${escape(w.last_check_minutes_ago)}m 前</td></tr>`).join("")}
-  </table>` : `<div class="empty">無 active watch</div>`;
+    <tr><th>社群</th><th>剩餘</th><th>上次檢查</th></tr>
+    ${ws.map(w => `<tr><td>${escape(w.community_id)}</td><td>${escape(w.remaining_minutes)} 分</td><td>${escape(w.last_check_minutes_ago)} 分前</td></tr>`).join("")}
+  </table>` : `<div class="empty">目前沒有追蹤中的社群</div>`;
 
   // Auto-fires
   const fs = d.recent_auto_fires || [];
   $("auto-fires").innerHTML = fs.length ? `<table>
-    <tr><th>時間</th><th>社群</th><th>codex 摘要</th></tr>
+    <tr><th>時間</th><th>社群</th><th>擬稿摘要</th></tr>
     ${fs.map(f => `<tr><td>${escape(f.fired_at_taipei)}</td><td>${escape(f.community_name)}</td><td>${escape((f.codex_summary || "").slice(0, 100))}</td></tr>`).join("")}
-  </table>` : `<div class="empty">最近無 auto-fire</div>`;
+  </table>` : `<div class="empty">最近沒有自動擬稿紀錄</div>`;
 }
 
 function renderEvents(events) {
   if (!events.length) {
-    $("events").innerHTML = `<div class="empty">無事件</div>`;
+    $("events").innerHTML = `<div class="empty">尚無事件</div>`;
     return;
   }
   const html = events.map(e => {

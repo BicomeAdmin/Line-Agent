@@ -74,6 +74,28 @@ _CHAT_HISTORY: dict[str, list[tuple[str, str]]] = {}
 _CHAT_HISTORY_LOCK = threading.Lock()
 _HISTORY_TURNS = 6  # keep last 6 (user, assistant) pairs per chat
 
+# Pending-edit state per chat: when operator clicks 「修改稿件」 on a card,
+# we stash {chat_id: review_id} here, then the next inbound message from
+# that chat is treated as the edit text instead of being routed to codex.
+# Single-process bridge, so a plain dict + lock is sufficient.
+_PENDING_EDIT_BY_CHAT: dict[str, str] = {}
+_PENDING_EDIT_LOCK = threading.Lock()
+
+
+def _set_pending_edit(chat_id: str, review_id: str) -> None:
+    with _PENDING_EDIT_LOCK:
+        _PENDING_EDIT_BY_CHAT[chat_id] = review_id
+
+
+def _pop_pending_edit(chat_id: str) -> str | None:
+    with _PENDING_EDIT_LOCK:
+        return _PENDING_EDIT_BY_CHAT.pop(chat_id, None)
+
+
+def _peek_pending_edit(chat_id: str) -> str | None:
+    with _PENDING_EDIT_LOCK:
+        return _PENDING_EDIT_BY_CHAT.get(chat_id)
+
 
 def _append_history(chat_id: str, user_text: str, assistant_text: str) -> None:
     with _CHAT_HISTORY_LOCK:
@@ -120,17 +142,27 @@ CODEX_FRAMING = (
     "## B. 出境風格錨定（你 → 草稿） — 真實成員模式\n"
     "**核心原則**：草稿要像「**這個群裡的另一個成員**」會講的話，不是小編廣播、不是助手客服。\n"
     "\n"
+    "**B-prelude（Persona 載入，每次進到一個社群必走第一步）**：\n"
+    "  → 呼叫 get_persona_context(community_id) 載入 (帳號 × 社群 × 人物設定 × 近期發言) 的完整脈絡。\n"
+    "  → 拿到結果後，**先把 `summary_zh` 那一行原樣 echo 回給操作員**（讓他確認你載對人了），再做後面的事。\n"
+    "    例：「在『山納百景』(openchat_003)，你是 客戶 A — 暱稱『小宇』，個性『偏觀察、有興趣時冒一兩句』。最近 7 天送過 3 句，最後一句：『JN3 我也還沒填欸』。」\n"
+    "  → 這個 echo 是強制的——不 echo 就不准動筆。\n"
+    "\n"
     "0. **Compose 前先做對話脈絡判斷**（這步沒做過不准 compose）：\n"
-    "   - read_recent_chat 看完之後，要**指得出**：「我這次的草稿是在回 X 那則『...』」，不能是憑空寫一句。\n"
-    "   - 檢查清單：\n"
-    "     ✓ 有人 @ 使用者、引用使用者上一句、或對話內容明顯接續使用者的話\n"
+    "   - read_recent_chat 看完之後，要**指得出兩件事**：\n"
+    "     (i) 「我這次的草稿是在回 X 那則『...』」——不能憑空寫一句。\n"
+    "     (ii) 「使用者自己最近在這個群講過 Y」——草稿要能**接續使用者已參與的線**，不能憑空創造一個新立場/新話題。\n"
+    "         判斷使用者自己的發言：voice_profile 裡有他的暱稱與口氣樣本；audit log 裡有 send_attempt 紀錄他最近實際送出的句子。\n"
+    "   - 檢查清單（兩個面向都要過）：\n"
+    "     ✓ 有人 @ 使用者、引用使用者上一句、或對話內容明顯接續使用者的話 **且** 使用者本人最近在這個群有發過跟你想擬的話相關的內容\n"
     "     ✓ 使用者有問題還沒人答，現在這個 compose 是合理的補答\n"
-    "     ✓ 操作員明確要求「擬稿 / 寫個回覆 / 接這句」並指出對象\n"
+    "     ✓ 操作員明確要求「擬稿 / 寫個回覆 / 接這句」並指出對象 **且** 草稿能接續使用者既有的發言/立場\n"
     "     ✗ 使用者上一句是答覆語（「對啊」「我也覺得」），群裡沒人接 → **不要再 compose**，那會變自言自語\n"
     "     ✗ 別人在彼此聊，跟使用者的最後一句沒關係 → **不要 compose**\n"
     "     ✗ 話題已經過了好幾則，現在補這句很突兀 → **不要 compose**\n"
     "     ✗ 找不到具體要回應的對象 → **不要 compose**\n"
-    "   - 任何 ✗ → 跟操作員說「沒有合適的脈絡可以接，這輪我先不擬」並停下來。\n"
+    "     ✗ **使用者最近沒在這個群講過跟你想擬的話相關的東西** → **不要憑空編一個立場讓他講**——退回略過。\n"
+    "   - 任何 ✗ → 跟操作員說「沒有合適的脈絡可以接，這輪我先不擬」並停下來，**並具體說明哪個 ✗ 觸發**。\n"
     "\n"
     "1. **每次** compose_and_send 之前，**必先依序**：\n"
     "   a. analyze_chat(community_id) 或 read_recent_chat(community_id, limit=20) 抓該群最近的真實對話；\n"
@@ -263,6 +295,15 @@ def _dispatch_to_claude(user_text: str, chat_id: str, event_id: str | None, payl
         {"event_id": event_id, "chat_id": chat_id, "text_preview": user_text[:80]},
     )
 
+    # If the operator clicked 「修改稿件」 on a card recently, the next
+    # message they send is the edit text. Route it directly to the
+    # action pipeline instead of asking codex (which has no idea about
+    # the pending edit).
+    pending_review_id = _peek_pending_edit(chat_id)
+    if pending_review_id:
+        _handle_pending_edit_submission(chat_id, user_text, pending_review_id, customer_id, event_id)
+        return
+
     try:
         reply = _run_codex(user_text, chat_id=chat_id)
     except subprocess.TimeoutExpired:
@@ -372,17 +413,131 @@ def _extract_codex_tail(stdout: str) -> str:
     return "\n".join(tail).strip()[-1000:]
 
 
+def _handle_pending_edit_submission(
+    chat_id: str,
+    edit_text: str,
+    review_id: str,
+    customer_id: str,
+    event_id: str | None,
+) -> None:
+    """Operator-typed reply after clicking 「修改稿件」 — submit it as the
+    new draft and clear the pending state. Bypasses codex entirely."""
+
+    text = edit_text.strip()
+    # Cancel intent: leave edit mode, send a confirmation card.
+    if text in ("取消", "cancel", "Cancel", "/cancel"):
+        _pop_pending_edit(chat_id)
+        try:
+            from app.lark.cards import build_reply_card
+            client = LarkClient()
+            client.send_card(
+                chat_id,
+                build_reply_card(f"已離開修改模式，`{review_id}` 維持原狀。", header_title="✏️ 修改取消"),
+                receive_id_type="chat_id",
+            )
+        except (LarkClientError, Exception) as exc:  # noqa: BLE001
+            print(f"[bridge]   cancel-edit reply failed: {exc}", file=sys.stderr, flush=True)
+        return
+
+    if not text:
+        return  # ignore empty messages, keep waiting
+
+    _pop_pending_edit(chat_id)
+
+    # Submit through the standard lark_action pipeline so audit trail and
+    # downstream review_store updates match Lark/CLI edit paths.
+    response = enqueue_lark_action({
+        "action": {
+            "value": {
+                "action": "edit",
+                "job_id": review_id,
+                "edited_draft_text": text,
+            }
+        }
+    })
+    append_audit_event(
+        customer_id,
+        "lark_edit_submitted_inline",
+        {"event_id": event_id, "review_id": review_id, "preview": text[:80], "queued_job": response.get("job_id")},
+    )
+
+    try:
+        from app.lark.cards import build_reply_card
+        client = LarkClient()
+        body = (
+            f"✏️ 收到，已用新內容重新送審：\n\n"
+            f"**新草稿**：「{text}」\n\n"
+            f"系統會推一張新的審核卡片給你（`{review_id}`，狀態 `pending_reapproval`）。"
+        )
+        client.send_card(
+            chat_id,
+            build_reply_card(body, header_title="✏️ 修改已送出"),
+            receive_id_type="chat_id",
+        )
+    except (LarkClientError, Exception) as exc:  # noqa: BLE001
+        print(f"[bridge]   edit confirmation push failed: {exc}", file=sys.stderr, flush=True)
+
+
+def _extract_action_info(payload: dict) -> dict[str, str] | None:
+    """Pull the action.value bag from either v1 webhook or v2 long-conn shape."""
+
+    action = payload.get("action")
+    if not isinstance(action, dict):
+        event = payload.get("event")
+        if isinstance(event, dict):
+            action = event.get("action")
+    if not isinstance(action, dict):
+        return None
+    value = action.get("value") or {}
+    if not isinstance(value, dict):
+        return None
+    return {k: v for k, v in value.items() if isinstance(v, str)}
+
+
+def _push_edit_instruction_card(chat_id: str, review_id: str, current_draft: str) -> None:
+    """Send a card telling the operator how to submit the edit text."""
+
+    try:
+        from app.lark.cards import build_reply_card
+        client = LarkClient()
+        body = (
+            f"✏️ 收到，準備修改 `{review_id}`\n\n"
+            f"目前草稿：\n「{current_draft[:200]}」\n\n"
+            "請**直接在這裡打你想改成的內容**（下一句訊息會被當作新草稿）。\n"
+            "或輸入「取消」離開修改模式。"
+        )
+        card = build_reply_card(body, header_title="✏️ 修改稿件")
+        client.send_card(chat_id, card, receive_id_type="chat_id")
+    except (LarkClientError, Exception) as exc:  # noqa: BLE001
+        print(f"[bridge]   edit instruction push failed: {exc}", file=sys.stderr, flush=True)
+
+
 def _on_card_action(typed_event) -> object:
     payload = _to_dict(typed_event)
     print(f"[bridge] card action trigger", flush=True)
-    print(f"[bridge]   payload keys={list(payload.keys())}", flush=True)
     try:
-        # Diagnostic: dump first 500 chars of payload so we can see the
-        # actual shape long-connection delivers (differs from v1 webhook).
-        import json as _json
-        print(f"[bridge]   payload preview: {_json.dumps(payload, ensure_ascii=False, default=str)[:500]}", flush=True)
-        response = enqueue_lark_action(payload)
-        print(f"[bridge]   → {response}", flush=True)
+        action_info = _extract_action_info(payload)
+        action = action_info.get("action") if action_info else None
+        job_id = action_info.get("job_id") if action_info else None
+
+        # Special-case the edit click: route the bridge into "waiting for
+        # edit text" mode and push an instruction card back so the
+        # operator knows what to type next. Without this, the click
+        # silently transitions review state to edit_required and the
+        # operator sees nothing happen.
+        if action == "edit" and job_id and not action_info.get("edited_draft_text"):
+            chat_id = os.getenv("OPERATOR_DAILY_DIGEST_CHAT_ID", "").strip()
+            if chat_id:
+                _set_pending_edit(chat_id, job_id)
+                _push_edit_instruction_card(chat_id, job_id, action_info.get("draft_text") or "")
+            else:
+                print("[bridge]   edit click ignored: OPERATOR_DAILY_DIGEST_CHAT_ID not set", flush=True)
+            # Also queue the standard action so audit log records the click.
+            response = enqueue_lark_action(payload)
+            print(f"[bridge]   edit pending; action queued → {response}", flush=True)
+        else:
+            response = enqueue_lark_action(payload)
+            print(f"[bridge]   → {response}", flush=True)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
     # The card-action handler must return some response — Lark uses it as the
