@@ -230,5 +230,63 @@ class SemanticTopicOverlapTests(unittest.TestCase):
         self.assertIsNone(d.target)
 
 
+class EmotionScoringTests(unittest.TestCase):
+    """Verify emotion-aware boosts/penalties when classifier is available."""
+
+    def setUp(self):
+        from app.ai import emotion_classifier
+
+        class _Stub:
+            def __init__(self, fixed_label, fixed_score=0.85):
+                self._label = fixed_label
+                self._score = fixed_score
+
+            def classify(self, text):
+                zh_map = {
+                    "puzzled": "疑惑", "sad": "悲傷", "angry": "憤怒",
+                    "disgust": "厭惡", "happy": "開心", "neutral": "平淡",
+                }
+                return {"label": self._label, "label_zh": zh_map.get(self._label, "平淡"), "score": self._score}
+
+        self._Stub = _Stub
+        self._set = emotion_classifier.set_test_classifier
+        self.addCleanup(lambda: self._set(None))
+
+    def test_puzzled_emotion_boosts(self):
+        self._set(self._Stub("puzzled", 0.85))
+        msgs = [_msg("Alice", "為什麼會這樣呢")]
+        d = select_reply_target(msgs, operator_persona=_persona("阿樂"), threshold=1.0)
+        self.assertIsNotNone(d.target)
+        self.assertTrue(any("emotion_puzzled" in r for r in d.target.reasons))
+
+    def test_sad_emotion_boosts(self):
+        self._set(self._Stub("sad", 0.85))
+        msgs = [_msg("Alice", "今天好難過")]
+        d = select_reply_target(msgs, operator_persona=_persona("阿樂"), threshold=1.0)
+        self.assertIsNotNone(d.target)
+        self.assertTrue(any("emotion_sad" in r for r in d.target.reasons))
+
+    def test_angry_emotion_penalizes(self):
+        self._set(self._Stub("angry", 0.85))
+        msgs = [_msg("Alice", "@阿樂 你們這樣很爛")]
+        d = select_reply_target(msgs, operator_persona=_persona("阿樂"))
+        # Angry message (-2.5) cancels much of the @-mention (+5), so
+        # score is much lower than a plain mention. Should not auto-fire
+        # at default threshold without other signals.
+        if d.target is not None:
+            self.assertTrue(
+                any("emotion_angry" in r for r in d.target.reasons),
+                msg=f"angry penalty should appear in reasons; got {d.target.reasons}",
+            )
+
+    def test_low_confidence_emotion_ignored(self):
+        self._set(self._Stub("puzzled", 0.40))  # below 0.55 cutoff
+        msgs = [_msg("Alice", "這個怎麼弄")]
+        d = select_reply_target(msgs, operator_persona=_persona("阿樂"), threshold=1.0)
+        if d.target is not None:
+            for r in d.target.reasons:
+                self.assertFalse("emotion_" in r, msg=f"emotion below cutoff still fired: {r}")
+
+
 if __name__ == "__main__":
     unittest.main()

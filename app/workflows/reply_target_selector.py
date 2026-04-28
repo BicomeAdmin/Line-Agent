@@ -156,6 +156,12 @@ def select_reply_target(
     from app.ai.embedding_service import get_embedding_service
     embedding_svc = get_embedding_service() if operator_anchor_texts else None
 
+    # Optional emotion classifier. Surfaces 疑惑 (real questions) and
+    # 悲傷 (vulnerability moments) as reply opportunities; flags 憤怒
+    # so we don't bot-reply into a fight.
+    from app.ai.emotion_classifier import get_emotion_classifier
+    emotion_clf = get_emotion_classifier()
+
     # Build operator-utterance set from chat tail. Two paths:
     #   (a) is_self flag — set by line_chat_parser when the parser saw a
     #       chat_ui_message_text (operator's own bubble). Most reliable.
@@ -212,6 +218,37 @@ def select_reply_target(
         if _PAIN_RE.search(text):
             score += 2.5
             reasons.append("pain_or_need:+2.5")
+
+        # Emotion-aware boosting. The model sometimes mis-fires on short
+        # text so require confidence ≥ 0.55 for any movement. We never
+        # downscore ambiguous cases — the threshold + cooldown
+        # gates already protect the inbox from over-firing.
+        emotion = None
+        if emotion_clf is not None:
+            try:
+                emotion = emotion_clf.classify(text)
+            except Exception:  # noqa: BLE001 — never let model errors break scoring
+                emotion = None
+        if emotion and emotion.get("score", 0) >= 0.55:
+            label = emotion.get("label")
+            score_e = emotion["score"]
+            if label == "puzzled":
+                # Real question / confusion — high-leverage to be helpful
+                score += 2.0
+                reasons.append(f"emotion_puzzled:+2.0(p={score_e:.2f})")
+            elif label == "sad":
+                # Vulnerability — caring response builds trust long-term
+                score += 1.5
+                reasons.append(f"emotion_sad:+1.5(p={score_e:.2f})")
+            elif label == "angry":
+                # Don't bot-reply into a fight. Flag so operator sees it,
+                # but don't auto-fire a response.
+                score -= 2.5
+                reasons.append(f"emotion_angry:-2.5(p={score_e:.2f}) ⚠️escalate")
+            elif label == "disgust":
+                # Strong negative — same risk as angry
+                score -= 2.0
+                reasons.append(f"emotion_disgust:-2.0(p={score_e:.2f})")
 
         # Direct @-mention to operator.
         if operator_nickname and (f"@{operator_nickname}" in text or operator_nickname in text):
