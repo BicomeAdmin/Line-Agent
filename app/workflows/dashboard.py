@@ -30,6 +30,7 @@ from app.storage.config_loader import load_all_communities
 from app.storage.paths import customer_root, voice_profile_path
 from app.storage.watches import list_active_watches_all_customers
 from app.workflows.persona_context import get_persona_context
+from app.workflows.kpi_tracker import kpi_summary_for_dashboard
 from app.workflows.send_metrics import get_send_metrics
 
 
@@ -111,6 +112,7 @@ def collect_dashboard_data(customer_id: str = "customer_a") -> dict[str, object]
         })
 
     health = _process_health()
+    kpi = kpi_summary_for_dashboard(customer_id)
 
     return {
         "generated_at_taipei": to_taipei_str(datetime.fromtimestamp(now, timezone.utc)),
@@ -123,6 +125,7 @@ def collect_dashboard_data(customer_id: str = "customer_a") -> dict[str, object]
         "active_watches": summarized_watches,
         "recent_auto_fires": (metrics.get("auto_fires") or [])[-5:],
         "recent_audit": recent_audit,
+        "kpi": kpi,
     }
 
 

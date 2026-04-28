@@ -46,6 +46,10 @@ from app.workflows.operator_identity import (
     set_operator_nickname as set_operator_nickname_workflow,
 )
 from app.workflows.chat_export_import import import_chat_export as import_chat_export_workflow
+from app.workflows.kpi_tracker import (
+    compute_community_kpis as compute_community_kpis_workflow,
+    kpi_summary_for_dashboard as kpi_summary_workflow,
+)
 from app.workflows.member_fingerprint import (
     get_member_fingerprint as get_member_fingerprint_workflow,
     load_member_fingerprints as load_member_fingerprints_workflow,
@@ -525,6 +529,19 @@ def tool_add_community(
         patrol_interval_minutes=patrol_interval_minutes,
         persona=persona,
     )
+
+
+def tool_compute_community_kpis(
+    community_id: str,
+    customer_id: str | None = None,
+    days_back: int = 30,
+) -> dict[str, Any]:
+    customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
+    return compute_community_kpis_workflow(customer_id, community_id, days_back=days_back)
+
+
+def tool_kpi_summary(customer_id: str | None = None) -> dict[str, Any]:
+    return kpi_summary_workflow(customer_id or "customer_a")
 
 
 def tool_refresh_member_fingerprints(
@@ -1028,6 +1045,31 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
             patrol_interval_minutes=patrol_interval_minutes,
             persona=persona,
         ),
+    ),
+    (
+        "compute_community_kpis",
+        "Compute Paul《私域流量》九宮格 KPI snapshot for one community: daily message count (UGC量), distinct active senders (互動深度), operator participation rate, broadcast-vs-natural ratio, top-3 senders per day, and 7-day / 30-day aggregates. Source: latest chat_exports/<community>__*.txt. Persists to customers/<id>/data/kpi_snapshots/<community_id>.json so dashboard reads are O(1). Run after import_chat_export, or weekly. Operator triggers: 「算 X 群本週指標」、「X 群健康嗎」、「九宮格更新」.",
+        {
+            "type": "object",
+            "properties": {
+                "community_id": {"type": "string"},
+                "customer_id": {"type": "string"},
+                "days_back": {"type": "integer", "default": 30},
+            },
+            "required": ["community_id"],
+            "additionalProperties": False,
+        },
+        lambda community_id, customer_id=None, days_back=30, **_: tool_compute_community_kpis(community_id=community_id, customer_id=customer_id, days_back=days_back),
+    ),
+    (
+        "kpi_summary",
+        "Cross-community KPI overview — 7-day message count, weekly active senders, daily average per community. Reads from cached snapshot files (no recompute). Use when operator asks 「全部社群健康狀況」 or for daily digest dashboard refresh. Refresh individual community via compute_community_kpis.",
+        {
+            "type": "object",
+            "properties": {"customer_id": {"type": "string"}},
+            "additionalProperties": False,
+        },
+        lambda customer_id=None, **_: tool_kpi_summary(customer_id=customer_id),
     ),
     (
         "refresh_member_fingerprints",

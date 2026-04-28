@@ -127,6 +127,7 @@ HTML_PAGE = """<!doctype html>
   <section class="panel full"><h2>🌐 社群</h2><div id="communities"></div></section>
   <section class="panel"><h2>📥 待審清單</h2><div id="inbox"></div></section>
   <section class="panel"><h2>⏰ 追蹤中</h2><div id="watches"></div></section>
+  <section class="panel full"><h2>📐 九宮格 KPI</h2><div id="kpi"></div></section>
   <section class="panel full"><h2>🛎 最近自動擬稿</h2><div id="auto-fires"></div></section>
   <section class="panel full"><h2>📋 即時事件流</h2><div id="events" class="events"></div></section>
 </main>
@@ -248,6 +249,29 @@ function renderSnapshot(d) {
     <tr><th>社群</th><th>剩餘</th><th>上次檢查</th></tr>
     ${ws.map(w => `<tr><td>${escape(w.community_id)}</td><td>${escape(w.remaining_minutes)} 分</td><td>${escape(w.last_check_minutes_ago)} 分前</td></tr>`).join("")}
   </table>` : `<div class="empty">目前沒有追蹤中的社群</div>`;
+
+  // KPI 九宮格
+  const kpi = (d.kpi || {}).rows || [];
+  $("kpi").innerHTML = kpi.length ? `<table>
+    <tr><th>社群</th><th>近 7 天訊息</th><th>本週活躍人數</th><th>每日平均</th><th>更新</th></tr>
+    ${kpi.map(r => {
+      if (!r.snapshot_present) {
+        return `<tr><td>${escape(r.community_id)} ${escape(r.display_name)}</td><td colspan="4"><span class="muted">尚未計算（執行 compute_community_kpis）</span></td></tr>`;
+      }
+      const msgs = r.messages_last_7_days || 0;
+      const active = r.weekly_active_senders || 0;
+      const avg = r.avg_daily_messages || 0;
+      const ts = r.computed_at_taipei || "—";
+      const healthBadge = msgs >= 50 ? "good" : msgs >= 10 ? "warn" : "muted";
+      return `<tr>
+        <td>${escape(r.community_id)} <span class="muted">${escape(r.display_name)}</span></td>
+        <td><span class="badge ${healthBadge}">${msgs}</span></td>
+        <td>${active}</td>
+        <td>${avg}</td>
+        <td><span class="muted">${escape(ts).slice(0, 16)}</span></td>
+      </tr>`;
+    }).join("")}
+  </table>` : `<div class="empty">尚未有 KPI snapshot — 執行 compute_community_kpis</div>`;
 
   // Auto-fires
   const fs = d.recent_auto_fires || [];
