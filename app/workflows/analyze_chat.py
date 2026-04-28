@@ -100,6 +100,11 @@ def analyze_chat(
     # 6) Sensitivity flags from profile Off-limits keywords (best-effort).
     sensitivity = _scan_sensitivity(messages, profile)
 
+    # 7) 4-bucket summary (Paul《私域流量》-style operator dashboard digest).
+    # Inspired by open-source-slack-ai's section structure but tuned for
+    # zh-TW community-ops vocabulary. Pure heuristic — no LLM call.
+    buckets = _summarize_4_buckets(messages)
+
     result = {
         "status": "ok",
         "customer_id": customer_id,
@@ -111,6 +116,7 @@ def analyze_chat(
         "last_message_minutes_ago": state.last_message_minutes_ago,
         "unanswered_question": unanswered,
         "sensitivity_hits": sensitivity,
+        "summary": buckets,  # 4-bucket: 重點 / 決定 / 待辦 / 未解問題
         "voice_profile_loaded": bool(profile.get("loaded")),
         "voice_profile_excerpt": _profile_excerpt(profile),
         "recent_messages": [
@@ -283,3 +289,147 @@ def _profile_excerpt(profile: dict) -> str:
     content = str(profile.get("content") or "")
     # Just send the first 800 chars — enough for tone + off-limits.
     return content[:800] + ("…" if len(content) > 800 else "")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 4-bucket summary (operator-facing digest, no LLM calls)
+# ──────────────────────────────────────────────────────────────────────
+
+# Keyword sets tuned for zh-TW community-ops vocabulary. These are
+# generous on purpose — false positives just mean an extra line in the
+# operator's summary, false negatives mean a missed signal.
+_DECISION_KW = (
+    "決定", "確定", "就這樣", "敲定", "拍板", "我們改", "我們要",
+    "OK 那", "好那就", "那就", "確認", "通過", "成立",
+)
+_ACTION_KW = (
+    "明天", "下週", "下禮拜", "記得", "要記得", "需要", "別忘了",
+    "請各位", "幫忙", "麻煩", "之後", "晚點", "等等", "稍後",
+    "提醒", "提交", "報名", "填寫", "繳交", "完成", "處理",
+)
+# Engagement signal: messages that drew clear follow-up activity
+_HIGH_ENGAGEMENT_PUNCT = re.compile(r"!{2,}|！{2,}|\?{2,}|？{2,}")
+
+
+def _summarize_4_buckets(messages: list[dict]) -> dict[str, object]:
+    """Heuristic 4-bucket digest of the chat tail.
+
+    Inspired by open-source-slack-ai's section structure (key points /
+    decisions / action items / unresolved). Tuned for zh-TW community
+    chat patterns — not a research-grade extractive summarizer, but a
+    cheap, deterministic operator-facing surface that beats "show last
+    20 lines verbatim" by a wide margin.
+
+    Returns a dict with four lists of (sender, text_preview, hint)
+    plus a one-line zh summary.
+    """
+
+    if not messages:
+        return {
+            "key_points": [],
+            "decisions": [],
+            "action_items": [],
+            "unresolved_questions": [],
+            "summary_zh": "（最近沒有訊息）",
+        }
+
+    # Engagement scoring: message i is "key" if multiple unique senders
+    # respond after it within a short window. Cheap proxy: count distinct
+    # senders in next 5 messages.
+    engagement_scores: list[int] = []
+    for i in range(len(messages)):
+        followers: set[str] = set()
+        my_sender = str(messages[i].get("sender") or "")
+        for j in range(i + 1, min(len(messages), i + 6)):
+            s = str(messages[j].get("sender") or "")
+            if s and s != my_sender and s != "__operator__":
+                followers.add(s)
+        engagement_scores.append(len(followers))
+
+    key_points: list[dict[str, object]] = []
+    decisions: list[dict[str, object]] = []
+    action_items: list[dict[str, object]] = []
+    unresolved: list[dict[str, object]] = []
+
+    for i, msg in enumerate(messages):
+        text = str(msg.get("text") or "").strip()
+        if not text or len(text) < 4:
+            continue
+        sender = str(msg.get("sender") or "unknown")
+        preview = text[:80]
+        item = {"sender": sender, "text": preview, "position": i}
+
+        # Decision detector
+        if any(kw in text for kw in _DECISION_KW):
+            decisions.append({**item, "matched": _first_match(text, _DECISION_KW)})
+
+        # Action item detector
+        if any(kw in text for kw in _ACTION_KW):
+            action_items.append({**item, "matched": _first_match(text, _ACTION_KW)})
+
+        # Key-point: high engagement followed
+        if engagement_scores[i] >= 2:
+            key_points.append({**item, "follower_count": engagement_scores[i]})
+        elif _HIGH_ENGAGEMENT_PUNCT.search(text) and len(text) >= 8:
+            # Short fallback: punctuation-heavy substantive messages
+            key_points.append({**item, "follower_count": 0, "tag": "expressive"})
+
+    # Unresolved questions = our existing unanswered detector + other
+    # questions in the chat that lack same-sender or operator follow-up.
+    unresolved = _unresolved_questions(messages)
+
+    # Cap each bucket so the digest stays readable
+    decisions = decisions[-5:]
+    action_items = action_items[-5:]
+    key_points = key_points[-5:]
+    unresolved = unresolved[-5:]
+
+    summary_parts = []
+    if key_points: summary_parts.append(f"重點 {len(key_points)} 則")
+    if decisions: summary_parts.append(f"決定 {len(decisions)} 則")
+    if action_items: summary_parts.append(f"待辦 {len(action_items)} 則")
+    if unresolved: summary_parts.append(f"未解 {len(unresolved)} 則")
+    summary_zh = "、".join(summary_parts) if summary_parts else "（對話平靜，無顯著訊號）"
+
+    return {
+        "key_points": key_points,
+        "decisions": decisions,
+        "action_items": action_items,
+        "unresolved_questions": unresolved,
+        "summary_zh": summary_zh,
+    }
+
+
+def _first_match(text: str, kws: tuple[str, ...]) -> str:
+    for kw in kws:
+        if kw in text:
+            return kw
+    return ""
+
+
+def _unresolved_questions(messages: list[dict]) -> list[dict[str, object]]:
+    """Find questions in the chat that don't have a clear follow-up answer
+    from a different sender within 4 messages."""
+
+    out: list[dict[str, object]] = []
+    n = len(messages)
+    q_re = re.compile(r"[?？]|請問|想問|有人知道|有沒有人|怎麼|什麼")
+    for i, msg in enumerate(messages):
+        text = str(msg.get("text") or "").strip()
+        if not text or not q_re.search(text):
+            continue
+        my_sender = str(msg.get("sender") or "")
+        # Look forward: did anyone different reply?
+        answered = False
+        for j in range(i + 1, min(n, i + 5)):
+            other = str(messages[j].get("sender") or "")
+            if other and other != my_sender:
+                answered = True
+                break
+        if not answered:
+            out.append({
+                "sender": my_sender,
+                "text": text[:80],
+                "position": i,
+            })
+    return out
