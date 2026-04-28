@@ -6,24 +6,42 @@ approves the card." HIL invariant unchanged: actual send still
 requires operator approval. This is target-selection + composition
 autonomy, not send autonomy.
 
+The scoring rubric is deliberately aligned with Paul's《私域流量》
+operating principles (CLAUDE.md §0.5):
+  - Paul's "創造價值" (Value): real questions / pain points / concrete
+    asks score higher than chatter, because replying to them deepens
+    relationship. Generic small talk gets lower priority.
+  - Paul's "陪伴 + 真誠": follow-ups to the operator's own threads
+    score high — that's continuity of relationship, not opportunism.
+  - Paul's "留量比流量": we'd rather skip a turn (target=None, silence)
+    than fire a generic "keep the group active" template. The threshold
+    enforces this.
+
 Scoring rubric (all weights tunable, all transparent in the trace):
 
-  +5.0  message @-mentions the operator (directed)
+  +5.0  message @-mentions the operator (directed engagement)
   +3.5  message is a question (?/？/疑問詞) AND nobody has answered
-        AND operator participated in this thread before
+        AND operator participated in this thread before (Paul: "create
+        value" by being the answerer)
   +2.5  operator was last to speak in the thread before this message
-        (someone is following up on operator's words)
+        (someone is following up on operator's words — chain of trust)
+  +2.5  message expresses a concrete pain / struggle / need
+        ("好難" / "卡住" / "不知道怎麼" / "求救" / "求推薦") — these
+        are gold per Paul: "讓嫌貨人變成連續買貨的人". Weighted
+        equally with after_operator_speech.
   +1.5  topic keyword overlap with operator's recent self-posts or
         voice profile sample lines (signals operator has stake)
   -2.0  message is a system/auto-reply post (Auto-reply / 公告 / 已收回)
   -2.0  message is from operator themselves (don't reply to self)
-  -1.0  message is too short (<4 chars after stripping emoji) — usually
-        sticker / picture without context
+  -1.5  message is broadcast-y (官方 / All-tag / 福利公告 / 抽獎 /
+        購物連結)— replying to a broadcast adds noise, not value
+  -1.0  message is too short (<4 chars after stripping emoji) —
+        usually sticker / picture without context
 
 Recency decay: linear, 1.0 weight at "most recent message", 0.0 at
 the 20th message back. We don't reply to ancient threads.
 
-A target is `actionable` only if score >= REPLY_THRESHOLD (default 2.5).
+A target is `actionable` only if score >= REPLY_THRESHOLD (default 2.0).
 If no message clears the bar, returns target=None — watcher should
 silently skip rather than burn an operator review on a weak pick.
 """
@@ -48,6 +66,23 @@ def _reply_threshold() -> float:
 
 _QUESTION_RE = re.compile(r"[?？]|請問|想問|有人知道|有沒有人|怎麼|什麼|哪裡|為什麼|是不是")
 _AUTO_PATTERNS = ("Auto-reply", "auto-reply", "已收回訊息", "加入聊天", "離開聊天")
+
+# Paul's "create value" signal — concrete pain / need / struggle.
+# Replying to these deepens trust faster than answering chitchat.
+_PAIN_RE = re.compile(
+    r"好難|卡住|不知道怎麼|不知道該|求救|求推薦|求助|求問|"
+    r"請教|有沒有推薦|好困擾|頭痛|崩潰|崩了|想哭|崩潰|"
+    r"踩雷|採雷|被雷|想知道|想了解|急需|哪位大大|請問各位"
+)
+
+# Broadcast / promo patterns — replying to these is noise, not value.
+# Most groups have a "小編" persona doing announcements; we don't add
+# value by replying to those.
+_BROADCAST_RE = re.compile(
+    r"@All|@all|公告：|公告:|福利|抽獎|限時優惠|快搶|搶購|"
+    r"開團|團購倒數|名額有限|正在火速|意願調查|報名連結|"
+    r"https?://[^\s]+獎|限定|搶先看|歡迎大家"
+)
 
 
 @dataclass
@@ -154,6 +189,19 @@ def select_reply_target(
         if len(stripped_for_len) < 4:
             score -= 1.0
             reasons.append("too_short:-1.0")
+
+        # Broadcast / promo content — replying adds noise.
+        if _BROADCAST_RE.search(text):
+            score -= 1.5
+            reasons.append("broadcast_promo:-1.5")
+
+        # Paul's "create value" — concrete pain / need / struggle.
+        # Real chance to deepen trust by being helpful. Weighted
+        # equally with after_operator_speech because both represent
+        # the highest-leverage relationship moments.
+        if _PAIN_RE.search(text):
+            score += 2.5
+            reasons.append("pain_or_need:+2.5")
 
         # Direct @-mention to operator.
         if operator_nickname and (f"@{operator_nickname}" in text or operator_nickname in text):

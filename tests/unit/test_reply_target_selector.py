@@ -130,5 +130,50 @@ class TopicOverlapTests(unittest.TestCase):
         self.assertIsNone(d.target)
 
 
+class PaulPrinciplesTests(unittest.TestCase):
+    """Verify Paul《私域流量》-derived weights: pain bonus + broadcast penalty."""
+
+    def test_pain_message_gets_bonus(self):
+        msgs = [
+            _msg("Alice", "好難喔不知道怎麼辦"),  # pain signal
+            _msg("Bob", "貼圖"),
+        ]
+        d = select_reply_target(msgs, operator_persona=_persona("阿樂"))
+        # Alice should win on pain bonus alone.
+        self.assertIsNotNone(d.target)
+        self.assertEqual(d.target.sender, "Alice")
+        self.assertTrue(any("pain_or_need" in r for r in d.target.reasons), msg=str(d.target.reasons))
+
+    def test_pain_message_with_question_combines(self):
+        msgs = [
+            _msg("阿樂", "今天聊聊整理"),
+            _msg("Alice", "求救！我家衣櫃完全卡住怎麼辦"),
+        ]
+        d = select_reply_target(msgs, operator_persona=_persona("阿樂"))
+        self.assertEqual(d.target.sender, "Alice")
+        # Pain (+2.0) + after_operator_speech (+2.5) — easily clears threshold
+        self.assertGreater(d.target.score, 4.0)
+
+    def test_broadcast_penalty(self):
+        msgs = [
+            _msg("Alice", "@All 福利公告：限時優惠！快搶 https://example.com"),
+            _msg("Bob", "我覺得這個還不錯"),
+        ]
+        d = select_reply_target(msgs, operator_persona=_persona("阿樂"))
+        # Bob's chatty message should win over Alice's broadcast,
+        # even though Alice has a mention. Broadcast penalty -1.5
+        # mostly negates the @-mention.
+        if d.target:
+            self.assertNotEqual(d.target.sender, "Alice")
+
+    def test_broadcast_alone_doesnt_fire(self):
+        msgs = [
+            _msg("Alice", "@All 抽獎活動報名連結 https://example.com 名額有限"),
+        ]
+        d = select_reply_target(msgs, operator_persona=_persona("阿樂"))
+        # Pure broadcast → should be skipped entirely.
+        self.assertIsNone(d.target)
+
+
 if __name__ == "__main__":
     unittest.main()
