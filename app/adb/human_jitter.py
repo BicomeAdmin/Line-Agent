@@ -145,6 +145,89 @@ def jittered_swipe(
     return nx1, ny1, nx2, ny2, nd
 
 
+def bezier_swipe(
+    client: Any,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    duration_ms: int,
+    *,
+    n_steps: int = 12,
+    curve_strength: float = 0.25,
+    pixel_jitter: int = 4,
+) -> tuple[int, int, int, int, int]:
+    """Curved swipe via `input motionevent DOWN/MOVE/UP` chain.
+
+    A real human's finger doesn't move in a perfectly straight line —
+    there's always small lateral deviation that follows a curved
+    trajectory. Standard `input swipe` produces a perfect straight line
+    at constant speed; this function instead samples N points along a
+    quadratic Bezier curve (with a randomized control point pulled to
+    one side) and emits one MOVE per sample, time-spaced via
+    duration_ms / n_steps.
+
+    Bezier curve:
+        P(t) = (1-t)² · P0 + 2t(1-t) · CTRL + t² · P1
+    where CTRL is offset perpendicular to the P0→P1 line by a random
+    fraction (curve_strength) of the swipe length.
+
+    Falls back to standard `jittered_swipe` if `input motionevent`
+    isn't supported (older Android API < 24, some custom ROMs).
+    Per Roadmap Tier 2 #5 — completes the anti-fingerprint trio
+    started by T1.2.
+
+    Returns the actual endpoints + n_steps used, for trace logging.
+    """
+
+    if _jitter_disabled():
+        client.shell("input", "swipe", str(x1), str(y1), str(x2), str(y2), str(duration_ms))
+        return x1, y1, x2, y2, n_steps
+
+    # Add slight endpoint noise (already in jittered_swipe but we
+    # re-do here so callers can opt for bezier directly).
+    nx1 = max(1, x1 + random.randint(-pixel_jitter, pixel_jitter))
+    ny1 = max(1, y1 + random.randint(-pixel_jitter, pixel_jitter))
+    nx2 = max(1, x2 + random.randint(-pixel_jitter, pixel_jitter))
+    ny2 = max(1, y2 + random.randint(-pixel_jitter, pixel_jitter))
+
+    # Compute Bezier control point: midpoint, perpendicular offset.
+    mid_x, mid_y = (nx1 + nx2) / 2, (ny1 + ny2) / 2
+    dx, dy = nx2 - nx1, ny2 - ny1
+    # Perpendicular vector (rotated 90°)
+    perp_x, perp_y = -dy, dx
+    perp_len = (perp_x ** 2 + perp_y ** 2) ** 0.5 or 1.0
+    perp_x, perp_y = perp_x / perp_len, perp_y / perp_len
+    # Offset signed by random sign × strength × stroke length
+    stroke_len = (dx ** 2 + dy ** 2) ** 0.5
+    offset = random.uniform(-curve_strength, curve_strength) * stroke_len
+    ctrl_x = mid_x + perp_x * offset
+    ctrl_y = mid_y + perp_y * offset
+
+    # Sample N points along quadratic Bezier, with eased timing
+    # (slow at start/end, faster in middle — natural human motion).
+    step_sleep = max(0.005, duration_ms / 1000.0 / n_steps)
+
+    try:
+        # Initial DOWN at start
+        client.shell("input", "motionevent", "DOWN", str(nx1), str(ny1))
+        for i in range(1, n_steps):
+            t = i / n_steps
+            # Ease in/out: smooth-step
+            t_eased = t * t * (3 - 2 * t)
+            x = (1 - t_eased) ** 2 * nx1 + 2 * t_eased * (1 - t_eased) * ctrl_x + t_eased ** 2 * nx2
+            y = (1 - t_eased) ** 2 * ny1 + 2 * t_eased * (1 - t_eased) * ctrl_y + t_eased ** 2 * ny2
+            client.shell("input", "motionevent", "MOVE", str(int(x)), str(int(y)))
+            time.sleep(step_sleep)
+        # Final UP at end
+        client.shell("input", "motionevent", "UP", str(nx2), str(ny2))
+    except Exception:  # noqa: BLE001
+        # Fallback to standard swipe if motionevent fails (older API).
+        client.shell("input", "swipe", str(nx1), str(ny1), str(nx2), str(ny2), str(duration_ms))
+
+    return nx1, ny1, nx2, ny2, n_steps
+
+
 def jittered_poll_interval(base_seconds: float, jitter_pct: float = 0.25) -> float:
     """Compute the actual interval to wait before next poll. Apply this
     to the threshold comparison in scheduler tick:

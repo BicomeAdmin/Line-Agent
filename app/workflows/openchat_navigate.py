@@ -28,6 +28,7 @@ from app.adb.line_app import (
     open_line,
 )
 from app.adb.human_jitter import (
+    bezier_swipe,
     jittered_sleep,
     jittered_swipe,
     jittered_tap,
@@ -145,7 +146,7 @@ def navigate_to_openchat(
         max_scrolls = 4
         while matched is None and scroll_attempts < max_scrolls:
             scroll_attempts += 1
-            jittered_swipe(client, 540, 1800, 540, 900, 300)
+            bezier_swipe(client, 540, 1800, 540, 900, 300)
             jittered_sleep(0.8)
             scrolled_xml = _dump(
                 client,
@@ -168,7 +169,7 @@ def navigate_to_openchat(
     if matched is None:
         # Scroll back to top of list before searching, so the search bar is visible.
         for _ in range(scroll_attempts if "scroll_attempts" in dir() else 0):
-            jittered_swipe(client, 540, 900, 540, 1800, 300)
+            bezier_swipe(client, 540, 900, 540, 1800, 300)
             jittered_sleep(0.4)
         search_xml = _dump(client, _navigate_xml_path(customer_id, community_id, "01_chats_top"))
         search = _find_search_target(search_xml or chat_list_xml)
