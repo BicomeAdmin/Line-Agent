@@ -110,10 +110,24 @@ def harvest_style_samples(
     limit: int = 200,
     top_n: int = 30,
     skip_navigate: bool = False,
+    append_mode: bool = True,
+    total_cap: int = 200,
 ) -> dict[str, object]:
-    """Read recent chat → filter noise → score → top N appended to voice profile.
+    """Read recent chat → filter noise → score → merge into voice profile.
 
-    Returns a structured dict the LLM brain can summarize back to operator.
+    Two modes:
+      - append_mode=True (default): existing harvested samples are kept;
+        this run's top_n new samples are deduped against them and added
+        to the END of the list. When the merged total exceeds total_cap,
+        the OLDEST samples (at the head of the list) get dropped. This
+        is the safe accumulation strategy — short single-session reads
+        per run, but coverage grows over time as you re-harvest weekly.
+      - append_mode=False: original replace behavior. Useful if the
+        community's voice has drifted significantly and you want to
+        start clean.
+
+    Returns a structured dict the LLM brain can summarize back to
+    operator, including how many new samples were added vs already-known.
     """
 
     try:
@@ -137,23 +151,39 @@ def harvest_style_samples(
 
     candidates = _filter_natural_lines(messages)
     scored = sorted(candidates, key=_score_line, reverse=True)
-    # Dedupe while preserving score order.
-    seen: set[str] = set()
-    selected: list[str] = []
-    for line in scored:
-        if line in seen:
-            continue
-        seen.add(line)
-        selected.append(line)
-        if len(selected) >= top_n:
-            break
 
     profile_path = voice_profile_path(customer_id, community_id)
     if not profile_path.exists():
         return {"status": "error", "reason": "voice_profile_missing", "path": str(profile_path)}
 
     before = profile_path.read_text(encoding="utf-8")
-    after = _splice_harvest_block(before, selected)
+    existing_samples = _extract_existing_samples(before) if append_mode else []
+
+    # Pick this run's new samples — dedup-aware against existing list.
+    existing_set = set(existing_samples)
+    new_picks: list[str] = []
+    seen_in_picks: set[str] = set()
+    for line in scored:
+        if line in existing_set or line in seen_in_picks:
+            continue
+        seen_in_picks.add(line)
+        new_picks.append(line)
+        if len(new_picks) >= top_n:
+            break
+
+    # Merge: existing first (preserves order = chronological), new at the end.
+    if append_mode:
+        merged = existing_samples + new_picks
+    else:
+        merged = new_picks
+
+    # Cap at total_cap by dropping oldest (head of list).
+    dropped_old = 0
+    if len(merged) > total_cap:
+        dropped_old = len(merged) - total_cap
+        merged = merged[-total_cap:]
+
+    after = _splice_harvest_block(before, merged)
     profile_path.write_text(after, encoding="utf-8")
 
     append_audit_event(
@@ -163,7 +193,10 @@ def harvest_style_samples(
             "community_id": community_id,
             "messages_read": len(messages),
             "candidates_kept": len(candidates),
-            "samples_written": len(selected),
+            "new_samples_added": len(new_picks),
+            "total_samples_now": len(merged),
+            "dropped_oldest": dropped_old,
+            "append_mode": append_mode,
         },
     )
 
@@ -172,8 +205,12 @@ def harvest_style_samples(
         "community_id": community_id,
         "messages_read": len(messages),
         "candidates_kept": len(candidates),
-        "samples_written": len(selected),
-        "preview": selected[:5],
+        "new_samples_added": len(new_picks),
+        "total_samples_now": len(merged),
+        "existing_samples_before": len(existing_samples),
+        "dropped_oldest": dropped_old,
+        "append_mode": append_mode,
+        "preview_new": new_picks[:5],
         "voice_profile_path": str(profile_path),
     }
 
@@ -239,6 +276,29 @@ def _score_line(text: str) -> float:
         casual_bonus -= 0.2
 
     return length_score + casual_bonus
+
+
+def _extract_existing_samples(profile_text: str) -> list[str]:
+    """Pull the bullet lines out of a previous auto-harvested block,
+    in order, so append_mode can dedup against them and preserve
+    chronology. Lines without the leading '- ' marker are skipped."""
+
+    if _HARVEST_BEGIN not in profile_text or _HARVEST_END not in profile_text:
+        return []
+    pattern = re.compile(
+        re.escape(_HARVEST_BEGIN) + r"(.*?)" + re.escape(_HARVEST_END),
+        re.DOTALL,
+    )
+    match = pattern.search(profile_text)
+    if not match:
+        return []
+    block = match.group(1)
+    samples: list[str] = []
+    for raw in block.splitlines():
+        s = raw.strip()
+        if s.startswith("- ") and len(s) > 2:
+            samples.append(s[2:].strip())
+    return samples
 
 
 def _splice_harvest_block(existing: str, samples: list[str]) -> str:

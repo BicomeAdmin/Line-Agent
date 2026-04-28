@@ -561,6 +561,8 @@ def tool_harvest_style_samples(
     limit: int = 200,
     top_n: int = 30,
     skip_navigate: bool = False,
+    append_mode: bool = True,
+    total_cap: int = 200,
 ) -> dict[str, Any]:
     customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
     return harvest_style_samples_workflow(
@@ -569,6 +571,8 @@ def tool_harvest_style_samples(
         limit=limit,
         top_n=top_n,
         skip_navigate=skip_navigate,
+        append_mode=append_mode,
+        total_cap=total_cap,
     )
 
 
@@ -973,25 +977,29 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
     ),
     (
         "harvest_style_samples",
-        "Read recent chat in a community, filter out announcements/links/system noise, score remaining lines for naturalness, and append the top N to that community's voice_profile.md under a managed `## Observed community lines` block. Use this when (a) a newly-onboarded community has only the bootstrap voice profile stub, or (b) the operator says 「幫 X 群抓一輪語氣樣本 / 補一下 X 群的真實語料 / X 群最近講話風格不太一樣」. Safe to re-run — the auto-managed block is replaced in place, the rest of the markdown (operator-edited Samples / Off-limits / personality) is preserved untouched.",
+        "Read recent chat in a community, filter out announcements/links/system noise, score remaining lines for naturalness, and merge the top N into the community's voice_profile.md under a managed `## Observed community lines` block. By default uses **append_mode=True**: existing harvested samples are kept, new picks are deduped against them and added to the end. When the merged total exceeds total_cap, oldest samples drop. This is the safe accumulation strategy — short single-session reads per run, but coverage grows over time as the operator re-harvests weekly. Set append_mode=False to fully replace (rare; only when community voice has drifted significantly). Use when operator says 「幫 X 群抓一輪語氣樣本 / 補一下 X 群的真實語料 / X 群最近講話風格不太一樣 / 累積 X 群的語料」. Safe to re-run — the auto-managed block is the only thing rewritten; operator-edited Samples / Off-limits / personality stay untouched.",
         {
             "type": "object",
             "properties": {
                 "community_id": {"type": "string"},
                 "customer_id": {"type": "string"},
-                "limit": {"type": "integer", "default": 200, "description": "How many recent messages to scan."},
-                "top_n": {"type": "integer", "default": 30, "description": "Max number of natural samples to keep."},
+                "limit": {"type": "integer", "default": 200, "description": "How many recent messages to scan in this run."},
+                "top_n": {"type": "integer", "default": 30, "description": "Max number of NEW samples to add this run (after dedup against existing)."},
                 "skip_navigate": {"type": "boolean", "default": False, "description": "Skip the deep-link navigate (use only when LINE is already on this room)."},
+                "append_mode": {"type": "boolean", "default": True, "description": "True = accumulate (preserve existing, dedup, drop oldest at cap). False = replace block entirely with this run's picks."},
+                "total_cap": {"type": "integer", "default": 200, "description": "Maximum total samples kept in voice_profile.md. Oldest get dropped when exceeded."},
             },
             "required": ["community_id"],
             "additionalProperties": False,
         },
-        lambda community_id, customer_id=None, limit=200, top_n=30, skip_navigate=False, **_: tool_harvest_style_samples(
+        lambda community_id, customer_id=None, limit=200, top_n=30, skip_navigate=False, append_mode=True, total_cap=200, **_: tool_harvest_style_samples(
             community_id=community_id,
             customer_id=customer_id,
             limit=limit,
             top_n=top_n,
             skip_navigate=skip_navigate,
+            append_mode=append_mode,
+            total_cap=total_cap,
         ),
     ),
     (

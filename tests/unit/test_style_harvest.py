@@ -202,7 +202,8 @@ class HarvestStyleSamplesIntegrationTests(unittest.TestCase):
             result = harvest_style_samples("customer_a", "openchat_test")
 
         self.assertEqual(result["status"], "ok")
-        self.assertGreater(result["samples_written"], 0)
+        self.assertGreater(result["new_samples_added"], 0)
+        self.assertIn("total_samples_now", result)
         text = self.profile_path.read_text(encoding="utf-8")
         self.assertIn("Operator section preserved.", text)
         self.assertIn("BEGIN auto-harvested", text)
@@ -224,6 +225,120 @@ class HarvestStyleSamplesIntegrationTests(unittest.TestCase):
             result = harvest_style_samples("customer_a", "openchat_x")
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["reason"], "voice_profile_missing")
+
+
+class AppendModeTests(unittest.TestCase):
+    """Verify that append_mode preserves existing samples, dedups new
+    picks against them, and drops oldest at total_cap."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self.tmp.name)
+        self.profile_path = self.tmp_path / "vp.md"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write_profile_with_existing_samples(self, samples):
+        from app.workflows.style_harvest import _build_harvest_block
+        body = "# Voice profile — test\n\nOperator section preserved.\n\n" + _build_harvest_block(samples) + "\n"
+        self.profile_path.write_text(body, encoding="utf-8")
+
+    def _patches(self, fake_messages):
+        community_stub = type("C", (), {
+            "customer_id": "customer_a",
+            "community_id": "openchat_test",
+            "device_id": "emulator-5554",
+        })()
+        return [
+            patch.object(style_harvest, "load_community_config", return_value=community_stub),
+            patch.object(style_harvest, "navigate_to_openchat", return_value={"status": "ok"}),
+            patch.object(style_harvest, "read_recent_chat", return_value=fake_messages),
+            patch.object(style_harvest, "voice_profile_path", return_value=self.profile_path),
+            patch.object(style_harvest, "default_raw_xml_path", return_value=Path("/tmp/dummy.xml")),
+            patch.object(style_harvest, "AdbClient", lambda **_: None),
+            patch.object(style_harvest, "append_audit_event", lambda *a, **k: None),
+        ]
+
+    def _enter(self, ps):
+        for p in ps: p.start()
+
+    def _stop(self, ps):
+        for p in ps: p.stop()
+
+    def test_append_mode_keeps_existing_and_adds_new(self):
+        self._write_profile_with_existing_samples(["欸真的", "對啊我也是"])
+        new_messages = [_msg("欸真的"), _msg("對啊我也是"), _msg("這個我覺得 OK 啊"), _msg("有人想一起嗎")]
+        ps = self._patches(new_messages)
+        self._enter(ps)
+        try:
+            r = harvest_style_samples("customer_a", "openchat_test", append_mode=True, top_n=10)
+        finally:
+            self._stop(ps)
+
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["existing_samples_before"], 2)
+        # New picks: only the 2 lines NOT in existing.
+        self.assertEqual(r["new_samples_added"], 2)
+        self.assertEqual(r["total_samples_now"], 4)
+        self.assertEqual(r["dropped_oldest"], 0)
+        # File should now have all 4 in order.
+        text = self.profile_path.read_text(encoding="utf-8")
+        self.assertIn("- 欸真的", text)
+        self.assertIn("- 對啊我也是", text)
+        self.assertIn("- 這個我覺得 OK 啊", text)
+        self.assertIn("- 有人想一起嗎", text)
+        # Operator section preserved.
+        self.assertIn("Operator section preserved.", text)
+
+    def test_append_mode_drops_oldest_when_exceeding_cap(self):
+        existing = [f"既有樣本{i}" for i in range(10)]
+        self._write_profile_with_existing_samples(existing)
+        new_messages = [_msg("新樣本一"), _msg("新樣本二"), _msg("新樣本三")]
+        ps = self._patches(new_messages)
+        self._enter(ps)
+        try:
+            r = harvest_style_samples("customer_a", "openchat_test", append_mode=True, top_n=3, total_cap=12)
+        finally:
+            self._stop(ps)
+
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["new_samples_added"], 3)
+        self.assertEqual(r["total_samples_now"], 12)
+        self.assertEqual(r["dropped_oldest"], 1)  # 10 + 3 - 12 = 1 dropped
+        text = self.profile_path.read_text(encoding="utf-8")
+        # 既有樣本0 was the oldest → dropped.
+        self.assertNotIn("- 既有樣本0\n", text)
+        # 既有樣本1 should still be there.
+        self.assertIn("- 既有樣本1", text)
+        # New ones added at the end.
+        self.assertIn("- 新樣本一", text)
+
+    def test_replace_mode_clears_existing(self):
+        self._write_profile_with_existing_samples(["舊一", "舊二", "舊三"])
+        new_messages = [_msg("欸這個有點意思耶")]
+        ps = self._patches(new_messages)
+        self._enter(ps)
+        try:
+            r = harvest_style_samples("customer_a", "openchat_test", append_mode=False, top_n=10)
+        finally:
+            self._stop(ps)
+
+        text = self.profile_path.read_text(encoding="utf-8")
+        self.assertNotIn("- 舊一", text)
+        self.assertNotIn("- 舊二", text)
+        self.assertIn("- 欸這個有點意思耶", text)
+
+
+class ExtractExistingSamplesTests(unittest.TestCase):
+    def test_returns_empty_when_no_block(self):
+        from app.workflows.style_harvest import _extract_existing_samples
+        self.assertEqual(_extract_existing_samples("# Profile\n\nNo block here."), [])
+
+    def test_extracts_bullet_lines_in_order(self):
+        from app.workflows.style_harvest import _build_harvest_block, _extract_existing_samples
+        text = "Header\n\n" + _build_harvest_block(["甲", "乙", "丙"])
+        self.assertEqual(_extract_existing_samples(text), ["甲", "乙", "丙"])
 
 
 if __name__ == "__main__":
