@@ -237,6 +237,16 @@ def tool_compose_and_send(
         },
     )
 
+    # Push an interactive review card to the operator's main Lark chat.
+    # The card carries [通過/修改/忽略] buttons so the operator can act
+    # without typing review_ids back. No-op when OPERATOR_DAILY_DIGEST_CHAT_ID
+    # isn't set; for the auto_watch path, watch_tick already pushes its own
+    # card to the watch's initiator_chat_id, so we skip there to avoid
+    # double-firing on the same review.
+    if source != "auto_watch":
+        from app.lark.notifier import notify_operator_of_new_review
+        notify_operator_of_new_review(record)
+
     # Mark the job as completed so when the operator approves, _approve_send
     # finds the source result on this job and routes correctly.
     job_registry.complete(

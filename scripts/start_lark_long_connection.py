@@ -185,8 +185,10 @@ CODEX_FRAMING = (
     "  · 如果操作員問「今天送了幾則」「pending 有幾個」這類具體問題，從 `data` 抽欄位精確答。\n"
     "- 「排程 X 時 Y 說 Z」→ add_scheduled_post（send_at 為 ISO 8601 含時區，例 2026-04-29T20:00:00+08:00）。\n"
     "\n"
-    "**回覆格式**：1-3 句繁中總結，回報關鍵欄位（review_id / community_name / status / active_state）。\n"
+    "**回覆格式**：1-3 句繁中總結，回報關鍵欄位（community_name / status / active_state）。\n"
     "不要貼整段 JSON、不要客套、不要解釋你內部呼叫了哪些 tool。\n"
+    "compose_and_send 之後**不需要把 review_id 貼回給操作員**——系統會自動推一張帶 [通過/修改/忽略] 按鈕的卡片到 Lark。\n"
+    "你只要簡短說「已擬一句『...』，請看下方卡片」即可。\n"
 )
 
 

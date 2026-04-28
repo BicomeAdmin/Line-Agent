@@ -497,6 +497,7 @@ def _sync_review_state(job: JobRecord, result: dict[str, object]) -> None:
                         "status": record.status,
                     },
                 )
+                _push_review_card_to_operator(record)
         return
 
     reviews = result.get("reviews")
@@ -519,6 +520,21 @@ def _sync_review_state(job: JobRecord, result: dict[str, object]) -> None:
                             "status": record.status,
                         },
                     )
+                    _push_review_card_to_operator(record)
+
+
+def _push_review_card_to_operator(record: ReviewRecord) -> None:
+    """Push the interactive review card to the operator's Lark chat.
+    Lazy-imported so test code that mocks job_processor doesn't have to
+    pull the Lark client transitively. Errors are swallowed inside the
+    notifier — review still lives in store, operator can still act via
+    CLI / dashboard."""
+
+    try:
+        from app.lark.notifier import notify_operator_of_new_review
+    except ImportError:
+        return
+    notify_operator_of_new_review(record)
 
 
 def _review_record_from_result(job_id: str, result: dict[str, object]) -> ReviewRecord | None:
