@@ -175,5 +175,60 @@ class PaulPrinciplesTests(unittest.TestCase):
         self.assertIsNone(d.target)
 
 
+class SemanticTopicOverlapTests(unittest.TestCase):
+    """When BGE is available, topic_overlap should fire on semantic
+    relatedness — not just bigram intersection. Use a stub embedding
+    service so the test doesn't pull a 95 MB model."""
+
+    def setUp(self):
+        from app.ai import embedding_service
+
+        class _Stub:
+            """Stub that returns high similarity when both texts share
+            a known topic keyword. Lets us exercise the threshold logic
+            without pulling 95 MB of model weights."""
+
+            def encode(self, t):
+                return t
+
+            def cosine(self, a, b):
+                topics = ["股票", "投資", "天氣"]
+                shared = [t for t in topics if t in a and t in b]
+                return 0.65 if shared else 0.10
+
+            def max_similarity(self, q, corpus):
+                if not corpus:
+                    return 0.0
+                return max((self.cosine(q, c) for c in corpus if c), default=0.0)
+
+        self._stub = _Stub()
+        embedding_service.set_test_service(self._stub)
+        self.addCleanup(lambda: embedding_service.set_test_service(None))
+
+    def test_semantic_path_fires_on_strong_match(self):
+        msgs = [_msg("Alice", "我也覺得股票最近真的很猛")]
+        d = select_reply_target(
+            msgs,
+            operator_persona=_persona("阿樂", recent_texts=["昨天股票漲了不少"]),
+            threshold=1.0,
+        )
+        self.assertIsNotNone(d.target)
+        self.assertTrue(
+            any("topic_overlap_sem" in r or "topic_loose_sem" in r for r in d.target.reasons),
+            msg=str(d.target.reasons),
+        )
+
+    def test_semantic_path_skips_unrelated(self):
+        msgs = [_msg("Alice", "今天天氣很好")]
+        d = select_reply_target(
+            msgs,
+            operator_persona=_persona("阿樂", recent_texts=["昨天股票漲了不少"]),
+            threshold=1.0,
+        )
+        # Unrelated short message — should not fire topic_overlap, and
+        # therefore won't clear threshold (no other signal on it).
+        self.assertIsNone(d.target)
+
+
 if __name__ == "__main__":
     unittest.main()

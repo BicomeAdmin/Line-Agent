@@ -137,14 +137,24 @@ def select_reply_target(
     operator_nickname = ""
     operator_recent_texts: list[str] = []
     operator_keywords: set[str] = set()
+    operator_anchor_texts: list[str] = []  # for embedding similarity
     if operator_persona and operator_persona.get("status") == "ok":
         vp = operator_persona.get("voice_profile") or {}
         operator_nickname = (vp.get("nickname") or "").strip()
         recent = operator_persona.get("recent_self_posts") or []
         operator_recent_texts = [str(r.get("text") or "") for r in recent]
-        operator_keywords = _extract_keywords(operator_recent_texts + [
-            str(s) for s in (vp.get("style_anchors") or "").splitlines()
-        ])
+        anchor_lines = (vp.get("style_anchors") or "").splitlines()
+        operator_keywords = _extract_keywords(operator_recent_texts + [str(s) for s in anchor_lines])
+        # For semantic scoring: use recent self-posts (real voice) only.
+        # Anchor lines from voice_profile are too generic ("短句、口語...")
+        # and would inflate similarity for everything.
+        operator_anchor_texts = [t for t in operator_recent_texts if t and len(t.strip()) >= 3]
+
+    # Optional semantic-similarity helper. Falls back to bigram keywords
+    # if BGE isn't available (no sentence-transformers, no network on
+    # first run, or test environment).
+    from app.ai.embedding_service import get_embedding_service
+    embedding_svc = get_embedding_service() if operator_anchor_texts else None
 
     # Build operator-utterance set from chat tail. Two paths:
     #   (a) is_self flag — set by line_chat_parser when the parser saw a
@@ -235,13 +245,27 @@ def select_reply_target(
                 score += 2.5
                 reasons.append("after_operator_speech:+2.5")
 
-        # Topic overlap with operator's voice / recent posts.
-        if operator_keywords:
+        # Topic overlap — prefer semantic similarity (BGE), fall back
+        # to bigram intersection. Both end up as a single +1.5 signal,
+        # so the rest of the rubric is unaffected.
+        if embedding_svc is not None and operator_anchor_texts:
+            sim = embedding_svc.max_similarity(text, operator_anchor_texts)
+            # 0.45 is the empirically-observed boundary between "vaguely
+            # same domain" and "actually about the same thing" on
+            # bge-small-zh-v1.5 for short Mandarin chat messages.
+            if sim >= 0.45:
+                score += 1.5
+                reasons.append(f"topic_overlap_sem:+1.5(sim={sim:.2f})")
+            elif sim >= 0.30:
+                # Weaker signal — a small nudge but not a full point.
+                score += 0.5
+                reasons.append(f"topic_loose_sem:+0.5(sim={sim:.2f})")
+        elif operator_keywords:
             msg_kw = _extract_keywords([text])
             overlap = msg_kw & operator_keywords
             if overlap:
                 score += 1.5
-                reasons.append(f"topic_overlap:+1.5({'/'.join(list(overlap)[:3])})")
+                reasons.append(f"topic_overlap_kw:+1.5({'/'.join(list(overlap)[:3])})")
 
         # Recency decay: messages further back lose weight.
         recency_factor = max(0.0, 1.0 - (n - 1 - i) / 20.0)
