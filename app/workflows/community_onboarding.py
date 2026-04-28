@@ -137,6 +137,107 @@ def add_community(
     }
 
 
+def refresh_community_title(
+    customer_id: str,
+    community_id: str,
+    *,
+    display_name: str | None = None,
+) -> dict[str, object]:
+    """Re-extract the chat title for an existing community and rewrite its YAML.
+
+    Two modes:
+      - explicit override: caller passes `display_name` directly (operator
+        knows the real name and just wants to set it).
+      - auto-detect (display_name is None): re-run the deep-link → dump UI →
+        title extraction flow. Used when add_community's first attempt fell
+        back to the placeholder "未命名社群 (xxx…)".
+
+    Only the YAML's display_name line is rewritten; the rest of the config
+    (persona, device, patrol interval, calibration nulls) stays put.
+    """
+
+    from app.storage.config_loader import load_community_config
+
+    try:
+        community = load_community_config(customer_id, community_id)
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "reason": f"community_lookup_failed:{exc}"}
+
+    old_name = community.display_name
+    trace: list[str] = []
+
+    if display_name is not None:
+        new_name = display_name.strip()
+        if not new_name:
+            return {"status": "error", "reason": "display_name_empty"}
+        trace.append(f"explicit_override:{new_name[:40]}")
+    else:
+        if not community.group_id:
+            return {"status": "error", "reason": "no_group_id_on_community"}
+        detected, detect_trace = _detect_display_name(community.device_id, community.group_id)
+        trace.extend(detect_trace)
+        if not detected:
+            return {
+                "status": "error",
+                "reason": "title_not_detected",
+                "trace": trace,
+                "old_display_name": old_name,
+                "hint": "可以改用 display_name=... 直接指定，或先確認 LINE 已開啟並停在聊天列表",
+            }
+        new_name = detected.strip()
+
+    if new_name == old_name:
+        return {
+            "status": "ok",
+            "changed": False,
+            "community_id": community_id,
+            "display_name": new_name,
+            "trace": trace,
+        }
+
+    yaml_path = _community_yaml_path(customer_id, community_id)
+    try:
+        original_text = yaml_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {"status": "error", "reason": f"yaml_read_failed:{exc}"}
+
+    # Rewrite just the display_name line — preserve everything else (comments,
+    # operator-edited fields, ordering) so this is a minimal, safe edit.
+    new_text, n_subs = re.subn(
+        r'^display_name:\s*.*$',
+        f'display_name: "{new_name}"',
+        original_text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if n_subs == 0:
+        return {"status": "error", "reason": "display_name_line_not_found_in_yaml"}
+
+    yaml_path.write_text(new_text, encoding="utf-8")
+
+    append_audit_event(
+        customer_id,
+        "community_title_refreshed",
+        {
+            "community_id": community_id,
+            "old_display_name": old_name,
+            "new_display_name": new_name,
+            "mode": "explicit" if display_name is not None else "auto_detect",
+            "trace": trace,
+        },
+    )
+
+    return {
+        "status": "ok",
+        "changed": True,
+        "community_id": community_id,
+        "old_display_name": old_name,
+        "display_name": new_name,
+        "yaml_path": str(yaml_path),
+        "trace": trace,
+    }
+
+
 def _next_community_id(customer_id: str) -> str:
     used: set[int] = set()
     for community in load_all_communities():

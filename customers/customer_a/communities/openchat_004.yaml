@@ -1,0 +1,12 @@
+community_id: openchat_004
+display_name: "水月觀音道場"
+invite_url: "https://line.me/ti/g2/-VDtB9z6f5vJPUwsjbZDRLcblPLrildOO53hsA?utm_source=invitation&utm_medium=link_copy&utm_campaign=default"
+group_id: "-VDtB9z6f5vJPUwsjbZDRLcblPLrildOO53hsA"
+persona: default
+device_id: emulator-5554
+patrol_interval_minutes: 720
+enabled: true
+input_x: null
+input_y: null
+send_x: null
+send_y: null

@@ -34,7 +34,10 @@ from app.storage.config_loader import load_all_communities, load_community_confi
 from app.workflows.acceptance_status import get_acceptance_status
 from app.workflows.action_queue import get_action_queue
 from app.workflows.analyze_chat import analyze_chat as analyze_chat_workflow
-from app.workflows.community_onboarding import add_community as add_community_workflow
+from app.workflows.community_onboarding import (
+    add_community as add_community_workflow,
+    refresh_community_title as refresh_community_title_workflow,
+)
 from app.workflows.send_metrics import get_send_metrics
 from app.storage.watches import (
     add_watch as watch_add,
@@ -496,6 +499,19 @@ def tool_add_community(
     )
 
 
+def tool_refresh_community_title(
+    community_id: str,
+    customer_id: str | None = None,
+    display_name: str | None = None,
+) -> dict[str, Any]:
+    customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
+    return refresh_community_title_workflow(
+        customer_id,
+        community_id,
+        display_name=display_name,
+    )
+
+
 def tool_analyze_chat(
     community_id: str,
     customer_id: str | None = None,
@@ -823,6 +839,25 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
             display_name=display_name,
             patrol_interval_minutes=patrol_interval_minutes,
             persona=persona,
+        ),
+    ),
+    (
+        "refresh_community_title",
+        "Re-extract or override a community's display_name and rewrite its YAML. Use this when an existing community's display_name is wrong or fell back to a placeholder like 「未命名社群 (xxx…)」 — common when add_community's first deep-link landed on the chat list instead of the chat itself. Two modes: (a) auto — omit display_name and the workflow will navigate via deep link, dump UI, and read the chat header; (b) explicit — pass display_name=\"...\" to set it directly when the operator already knows the real name. Operator triggers: 「幫我把 openchat_004 名字補上」、「openchat_003 名字錯了，改成 ...」、「重新讀一下這群名字」.",
+        {
+            "type": "object",
+            "properties": {
+                "community_id": {"type": "string"},
+                "customer_id": {"type": "string"},
+                "display_name": {"type": "string", "description": "Optional explicit override. Omit to auto-detect via deep link + UI dump."},
+            },
+            "required": ["community_id"],
+            "additionalProperties": False,
+        },
+        lambda community_id, customer_id=None, display_name=None, **_: tool_refresh_community_title(
+            community_id=community_id,
+            customer_id=customer_id,
+            display_name=display_name,
         ),
     ),
     (
