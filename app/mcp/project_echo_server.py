@@ -716,7 +716,7 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
     ),
     (
         "compose_and_send",
-        "Stage a message for human review. The text lands as a pending review_card; the operator must call approve_review (or tap Lark Approve) before anything is sent. NEVER bypasses human approval. Pass `source` so metrics can break stats down: 'operator' (default — direct user request), 'auto_watch' (called from a Phase-2 watch tick), 'scheduled_post' (auto-fired from add_scheduled_post).",
+        "Stage a message for human review. The text lands as a pending review_card; the operator must call approve_review (or tap Lark Approve) before anything is sent. NEVER bypasses human approval.\n\n**Conversation-context check is REQUIRED before calling this tool.** Before composing, you MUST have already called read_recent_chat (or analyze_chat) and confirmed: (a) which specific message in the chat you are responding to, (b) that message is actually directed at the user (mention / quote / clear context), AND (c) the user hasn't already answered or moved on. If you cannot point to a specific message and explain why your draft is the natural next reply, do NOT compose — say 「沒有合適的脈絡可以接，不擬稿」 and stop. Drafts produced without a clear conversation anchor read as bot self-talk and damage the operator's standing in the community.\n\nPass `source` so metrics can break stats down: 'operator' (default — direct user request), 'auto_watch' (called from a Phase-2 watch tick), 'scheduled_post' (auto-fired from add_scheduled_post).",
         {
             "type": "object",
             "properties": {

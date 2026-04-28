@@ -6,17 +6,18 @@ snapshot (same data as scripts/dashboard.py CLI) plus a tail of the
 most recent audit events so you can see things happening as they
 happen.
 
-Read-only by design. The action buttons on review cards still flow
-through Lark / CLI — keeping the operator approval surface in one
-place per CLAUDE.md §3.1 (HIL invariant). A future v2 can add
-approve/ignore endpoints once we're confident about local-network
-trust assumptions.
+Mostly read-only. The single allowed mutation is **ignore a pending
+review** — that's a "do-not-send" action with no outbound side effects,
+so exposing it in the local UI doesn't violate CLAUDE.md §3.1's HIL
+invariant (which is specifically about not sending without operator
+approval). Approve / send still goes through Lark cards or CLI.
 
 Endpoints:
-  GET /                     → single-page HTML (vanilla JS polls below)
-  GET /api/snapshot         → structured dashboard data
-  GET /api/events?limit=50  → recent audit events (most-recent first)
-  GET /api/health           → liveness ping
+  GET  /                              → single-page HTML
+  GET  /api/snapshot                  → structured dashboard data
+  GET  /api/events?limit=50           → recent audit events (most-recent first)
+  GET  /api/health                    → liveness ping
+  POST /api/reviews/<id>/ignore       → mark review as ignored (no Lark side effects)
 """
 
 from __future__ import annotations
@@ -27,7 +28,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from app.core.audit import read_recent_audit_events
+from app.core.audit import append_audit_event, read_recent_audit_events
+from app.core.reviews import ACTIVE_REVIEW_STATUSES, review_store
 from app.core.timezone import to_taipei_str
 from app.workflows.dashboard import collect_dashboard_data
 
@@ -97,6 +99,18 @@ HTML_PAGE = """<!doctype html>
   .events .et.error, .events .et.failed { color: var(--bad); }
   .events .et.fired, .events .et.compose { color: var(--pending); }
   .empty { color: var(--muted); font-style: italic; }
+  .btn-ignore {
+    background: rgba(239, 83, 80, 0.15);
+    color: var(--bad);
+    border: 1px solid rgba(239, 83, 80, 0.4);
+    border-radius: 4px;
+    padding: 3px 10px;
+    cursor: pointer;
+    font: 11px/1 -apple-system, BlinkMacSystemFont, sans-serif;
+    transition: background 0.15s;
+  }
+  .btn-ignore:hover:not(:disabled) { background: rgba(239, 83, 80, 0.3); }
+  .btn-ignore:disabled { opacity: 0.5; cursor: wait; }
   footer { text-align: center; padding: 16px; color: var(--muted); font-size: 11px; }
 </style>
 </head>
@@ -184,13 +198,44 @@ function renderSnapshot(d) {
   // Inbox
   const inbox = d.pending_reviews || [];
   $("inbox").innerHTML = inbox.length ? `<table>
-    <tr><th>review_id</th><th>社群</th><th>草稿</th><th>等待</th></tr>
+    <tr><th>review_id</th><th>社群</th><th>草稿</th><th>等待</th><th>動作</th></tr>
     ${inbox.map(p => {
       const age = p.age_hours >= 1 ? `${Math.floor(p.age_hours)}h` : `${Math.floor(p.age_seconds/60)}m`;
       const ageBadge = p.age_hours >= 4 ? "bad" : p.age_hours >= 2 ? "warn" : "muted";
-      return `<tr><td><code>${escape(p.review_id)}</code></td><td>${escape(p.community_name)}</td><td>${escape(p.draft_text).slice(0, 50)}</td><td><span class="badge ${ageBadge}">${age}</span></td></tr>`;
+      return `<tr>
+        <td><code>${escape(p.review_id)}</code></td>
+        <td>${escape(p.community_name)}</td>
+        <td>${escape(p.draft_text).slice(0, 60)}</td>
+        <td><span class="badge ${ageBadge}">${age}</span></td>
+        <td><button class="btn-ignore" data-id="${escape(p.review_id)}" data-preview="${escape(p.draft_text).slice(0,40)}">忽略</button></td>
+      </tr>`;
     }).join("")}
   </table>` : `<div class="empty">無待審 ✅</div>`;
+  // Wire ignore buttons (re-attach each render since innerHTML rebuilds DOM).
+  document.querySelectorAll(".btn-ignore").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.id;
+      const preview = btn.dataset.preview;
+      if (!confirm(`確定要忽略這則待審？\n\nID: ${id}\n草稿: ${preview}…\n\n忽略後不會送出（也不會 approve），可在事件流追蹤。`)) return;
+      btn.disabled = true;
+      btn.textContent = "處理中...";
+      try {
+        const r = await fetch(`/api/reviews/${encodeURIComponent(id)}/ignore`, { method: "POST" });
+        const j = await r.json();
+        if (j.status === "ok") {
+          refresh();  // immediate redraw
+        } else {
+          alert(`忽略失敗：${j.reason || "unknown"}`);
+          btn.disabled = false;
+          btn.textContent = "忽略";
+        }
+      } catch (err) {
+        alert(`忽略失敗：${err}`);
+        btn.disabled = false;
+        btn.textContent = "忽略";
+      }
+    });
+  });
 
   // Watches
   const ws = d.active_watches || [];
@@ -280,6 +325,57 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._respond_json({"error": str(exc)}, status=500)
             except Exception:  # noqa: BLE001
                 pass
+
+    def do_POST(self) -> None:
+        try:
+            url = urlparse(self.path)
+            # POST /api/reviews/<id>/ignore — single-button "do-not-send"
+            # mutation. No payload required; review_id from URL.
+            parts = url.path.strip("/").split("/")
+            if len(parts) == 4 and parts[0] == "api" and parts[1] == "reviews" and parts[3] == "ignore":
+                review_id = parts[2]
+                self._ignore_review(review_id)
+                return
+            self._respond(404, "text/plain", b"not found")
+        except Exception as exc:  # noqa: BLE001
+            try:
+                self._respond_json({"error": str(exc)}, status=500)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _ignore_review(self, review_id: str) -> None:
+        record = review_store.get(review_id)
+        if record is None:
+            self._respond_json({"status": "error", "reason": "review_not_found", "review_id": review_id}, status=404)
+            return
+        if record.status not in ACTIVE_REVIEW_STATUSES:
+            self._respond_json({
+                "status": "error",
+                "reason": "review_not_active",
+                "current_status": record.status,
+            }, status=409)
+            return
+
+        previous_status = record.status
+        updated = review_store.update_status(review_id, "ignored", updated_from_action="web_dashboard")
+        if updated is None:
+            self._respond_json({"status": "error", "reason": "update_failed"}, status=500)
+            return
+
+        # Audit trail mirrors the Lark / CLI ignore path so dashboard's
+        # event stream and downstream send-stats reflect the action.
+        append_audit_event(
+            record.customer_id,
+            "review_status_changed",
+            {
+                "review_id": review_id,
+                "community_id": record.community_id,
+                "status": "ignored",
+                "previous_status": previous_status,
+                "updated_from_action": "web_dashboard",
+            },
+        )
+        self._respond_json({"status": "ok", "review_id": review_id, "new_status": "ignored"})
 
     def _respond(self, status: int, content_type: str, body: bytes) -> None:
         self.send_response(status)
