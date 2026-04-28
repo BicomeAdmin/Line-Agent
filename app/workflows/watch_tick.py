@@ -37,6 +37,7 @@ from app.storage.watches import (
 )
 from app.workflows.openchat_navigate import navigate_to_openchat
 from app.workflows.read_chat import read_recent_chat
+from app.workflows.style_harvest import fingerprint_conversation
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -115,9 +116,21 @@ def _tick_one(watch: dict[str, object]) -> dict[str, object]:
             "new_signature": new_sig,
         }
 
+    # Compute current-conversation style fingerprint and inject into the
+    # codex prompt — Skill B. Lets the auto-watch draft match the *current
+    # vibe* (median length / emoji rate / particles) on top of the static
+    # voice profile, so replies don't read as off-tone for what's happening
+    # right now.
+    style_hint = fingerprint_conversation(messages)
+
     # Spawn codex with the auto-watch prompt — let it decide compose vs skip.
     try:
-        composed = _spawn_codex_for_watch(customer_id, community_id, community.display_name)
+        composed = _spawn_codex_for_watch(
+            customer_id,
+            community_id,
+            community.display_name,
+            style_hint=style_hint,
+        )
     except Exception as exc:  # noqa: BLE001
         traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
         append_audit_event(
@@ -208,11 +221,13 @@ def _find_recent_auto_watch_review(customer_id: str, community_id: str) -> tuple
 
 WATCH_PROMPT_TEMPLATE = (
     "你正在替使用者「自動追蹤」社群「{community_name}」({community_id})。\n"
+    "{style_hint_block}"
     "規則：\n"
     "1. 先呼叫 read_recent_chat({community_id}, limit=20) 取得最新對話。\n"
     "2. 對照使用者最近送出的內容（你會在訊息看到 send_attempt 紀錄）：\n"
     "   - 如果有新成員針對使用者的話**直接接話**（@提及、引用、或內容明顯相關），**就 compose_and_send 一句自然回覆**。\n"
     "   - 風格：成員身份，遵守 voice_profile，短句、口語、不客套、不廣播。compose 前必先 get_voice_profile。\n"
+    "   - **字數要對齊上面的『本群現在的講話氛圍』**——中位字數是多少，你的草稿就在那附近 ±30%，不要明顯比群裡長。\n"
     "   - 呼叫 compose_and_send 時**必須帶 `source=\"auto_watch\"`**，這樣 send 統計才能正確分類為自動發送。\n"
     "3. 若**沒有人針對使用者回覆**，或話題不需要回（例如別人在自己對話），**這一輪就不要 compose**——\n"
     "   只回一行繁中說明「本輪沒值得補的回覆，本輪略過」。\n"
@@ -222,13 +237,35 @@ WATCH_PROMPT_TEMPLATE = (
 )
 
 
-def _spawn_codex_for_watch(customer_id: str, community_id: str, community_name: str) -> str:
+def _format_style_hint_block(style_hint: dict[str, object] | None) -> str:
+    if not style_hint or style_hint.get("median_length") is None:
+        return ""
+    summary = style_hint.get("summary_zh") or ""
+    if not summary:
+        return ""
+    return (
+        f"本群現在的講話氛圍（從最近 {style_hint.get('sample_count')} 則統計）：{summary}\n"
+        "→ 你的草稿風格、字數、語助詞要貼近這個氛圍，不要寫得比群裡正式或冗長。\n\n"
+    )
+
+
+def _spawn_codex_for_watch(
+    customer_id: str,
+    community_id: str,
+    community_name: str,
+    *,
+    style_hint: dict[str, object] | None = None,
+) -> str:
     """Spawn a one-shot codex turn with the auto-watch instructions.
 
     Output goes to a temp file via --output-last-message; we return that.
     """
 
-    prompt = WATCH_PROMPT_TEMPLATE.format(community_name=community_name, community_id=community_id)
+    prompt = WATCH_PROMPT_TEMPLATE.format(
+        community_name=community_name,
+        community_id=community_id,
+        style_hint_block=_format_style_hint_block(style_hint),
+    )
     with tempfile.NamedTemporaryFile(mode="w+", suffix=".txt", delete=False, encoding="utf-8") as fh:
         last_msg_path = fh.name
     cmd = [

@@ -38,6 +38,7 @@ from app.workflows.community_onboarding import (
     add_community as add_community_workflow,
     refresh_community_title as refresh_community_title_workflow,
 )
+from app.workflows.style_harvest import harvest_style_samples as harvest_style_samples_workflow
 from app.workflows.send_metrics import get_send_metrics
 from app.storage.watches import (
     add_watch as watch_add,
@@ -499,6 +500,23 @@ def tool_add_community(
     )
 
 
+def tool_harvest_style_samples(
+    community_id: str,
+    customer_id: str | None = None,
+    limit: int = 200,
+    top_n: int = 30,
+    skip_navigate: bool = False,
+) -> dict[str, Any]:
+    customer_id = customer_id or _default_customer_for_community(community_id) or "customer_a"
+    return harvest_style_samples_workflow(
+        customer_id,
+        community_id,
+        limit=limit,
+        top_n=top_n,
+        skip_navigate=skip_navigate,
+    )
+
+
 def tool_refresh_community_title(
     community_id: str,
     customer_id: str | None = None,
@@ -839,6 +857,29 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
             display_name=display_name,
             patrol_interval_minutes=patrol_interval_minutes,
             persona=persona,
+        ),
+    ),
+    (
+        "harvest_style_samples",
+        "Read recent chat in a community, filter out announcements/links/system noise, score remaining lines for naturalness, and append the top N to that community's voice_profile.md under a managed `## Observed community lines` block. Use this when (a) a newly-onboarded community has only the bootstrap voice profile stub, or (b) the operator says 「幫 X 群抓一輪語氣樣本 / 補一下 X 群的真實語料 / X 群最近講話風格不太一樣」. Safe to re-run — the auto-managed block is replaced in place, the rest of the markdown (operator-edited Samples / Off-limits / personality) is preserved untouched.",
+        {
+            "type": "object",
+            "properties": {
+                "community_id": {"type": "string"},
+                "customer_id": {"type": "string"},
+                "limit": {"type": "integer", "default": 200, "description": "How many recent messages to scan."},
+                "top_n": {"type": "integer", "default": 30, "description": "Max number of natural samples to keep."},
+                "skip_navigate": {"type": "boolean", "default": False, "description": "Skip the deep-link navigate (use only when LINE is already on this room)."},
+            },
+            "required": ["community_id"],
+            "additionalProperties": False,
+        },
+        lambda community_id, customer_id=None, limit=200, top_n=30, skip_navigate=False, **_: tool_harvest_style_samples(
+            community_id=community_id,
+            customer_id=customer_id,
+            limit=limit,
+            top_n=top_n,
+            skip_navigate=skip_navigate,
         ),
     ),
     (
