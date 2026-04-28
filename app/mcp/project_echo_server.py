@@ -39,6 +39,7 @@ from app.workflows.community_onboarding import (
     refresh_community_title as refresh_community_title_workflow,
 )
 from app.workflows.style_harvest import harvest_style_samples as harvest_style_samples_workflow
+from app.workflows.dashboard import collect_dashboard_data, format_text_report
 from app.workflows.send_metrics import get_send_metrics
 from app.storage.watches import (
     add_watch as watch_add,
@@ -500,6 +501,19 @@ def tool_add_community(
     )
 
 
+def tool_get_status_digest(
+    customer_id: str | None = None,
+    compact: bool = True,
+) -> dict[str, Any]:
+    cid = customer_id or "customer_a"
+    data = collect_dashboard_data(cid)
+    return _ok({
+        "customer_id": cid,
+        "text": format_text_report(data, compact=compact),
+        "data": data,
+    })
+
+
 def tool_harvest_style_samples(
     community_id: str,
     customer_id: str | None = None,
@@ -858,6 +872,19 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
             patrol_interval_minutes=patrol_interval_minutes,
             persona=persona,
         ),
+    ),
+    (
+        "get_status_digest",
+        "One-shot operational dashboard: system health (daemon/bridge), 24h send pipeline totals, per-community state (voice profile health, pending reviews, active watch), pending inbox with age, recent auto-fires, recent audit events. Use this whenever the operator asks 「狀態 / 盤點 / 看一下系統 / 給我一份摘要 / 現在怎樣」 or any general health-check question. Returns a `text` field — paste that text **verbatim** to the operator (don't paraphrase, don't strip lines), it's already formatted for Lark display. The `data` field is the structured snapshot for follow-up reasoning if needed.",
+        {
+            "type": "object",
+            "properties": {
+                "customer_id": {"type": "string"},
+                "compact": {"type": "boolean", "default": True, "description": "Compact mode skips the recent_audit section (Lark-friendly)."},
+            },
+            "additionalProperties": False,
+        },
+        lambda customer_id=None, compact=True, **_: tool_get_status_digest(customer_id=customer_id, compact=compact),
     ),
     (
         "harvest_style_samples",
