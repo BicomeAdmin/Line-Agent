@@ -4,5 +4,8 @@ __pycache__/
 .pytest_cache/
 .env
 .project_echo/
-customers/*/data/raw_xml/
-customers/*/data/audit.jsonl
+
+# Runtime state (per-customer data dirs are runtime, not config).
+# Voice profiles + community YAML are operator-curated and live in customers/<id>/{communities,voice_profiles,personas,playbooks,souls}/ — those stay tracked.
+# Everything under customers/<id>/data/ is runtime mutable state and gets ignored.
+customers/*/data/
