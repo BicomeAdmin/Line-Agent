@@ -63,3 +63,29 @@ class RiskControl:
 
 
 default_risk_control = RiskControl()
+
+
+def community_is_in_activity_window(community, *, now: datetime | None = None) -> bool:
+    """Per-community activity window with global fallback.
+
+    A community can override the global window via `activity_window.start_hour_tpe`
+    / `activity_window.end_hour_tpe` in its YAML (e.g. a high-engagement group
+    that's active 08:00-23:30, or a low-noise group restricted to 14:00-18:00).
+    When either field is None the community defers to `default_risk_control`.
+
+    The override is intentionally simple — hour-only, no minutes, no DOW/holiday
+    rules. If we ever need finer granularity, extend `CommunityConfig` and this
+    function together rather than scattering window logic across callers.
+    """
+
+    start_hour = getattr(community, "activity_start_hour_tpe", None)
+    end_hour = getattr(community, "activity_end_hour_tpe", None)
+    # Strict isinstance check (not just `is None`) so test mocks or partially
+    # populated configs that happen to have a non-int sentinel for these
+    # fields cleanly fall through to the global default.
+    if not (isinstance(start_hour, int) and isinstance(end_hour, int)):
+        return default_risk_control.is_activity_time(now)
+
+    from app.core.timezone import taipei_now
+    current = (now or taipei_now()).time()
+    return day_time(start_hour, 0) <= current <= day_time(end_hour, 0)

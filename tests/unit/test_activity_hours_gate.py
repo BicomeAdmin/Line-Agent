@@ -101,5 +101,71 @@ class PatrolGateTests(unittest.TestCase):
             self.assertEqual(s["reason"], "outside_activity_hours")
 
 
+class CommunityActivityWindowTests(unittest.TestCase):
+    """Per-community window override defers to global when unset, takes
+    precedence when set."""
+
+    def _make_community(self, *, start=None, end=None):
+        from app.storage.config_loader import CommunityConfig
+        return CommunityConfig(
+            customer_id="customer_a",
+            community_id="openchat_test",
+            display_name="test",
+            persona="default",
+            device_id="emulator-5554",
+            patrol_interval_minutes=120,
+            activity_start_hour_tpe=start,
+            activity_end_hour_tpe=end,
+        )
+
+    def test_no_override_falls_back_to_global(self):
+        from app.core.risk_control import community_is_in_activity_window
+        from app.core import risk_control as rc_mod
+        community = self._make_community()  # no override
+        with patch.object(rc_mod, "default_risk_control", _OffHoursStub()):
+            self.assertFalse(community_is_in_activity_window(community))
+
+    def test_override_widens_window(self):
+        # Override 06:00-23:30. Global stub says off-hours, but override should win.
+        from app.core.risk_control import community_is_in_activity_window
+        community = self._make_community(start=6, end=23)
+        # 09:00 TPE is inside override but outside off-hours stub
+        self.assertTrue(community_is_in_activity_window(community, now=_at(9, 0)))
+
+    def test_override_narrows_window(self):
+        # Override 14:00-18:00. 12:00 is in global default but outside override.
+        from app.core.risk_control import community_is_in_activity_window
+        community = self._make_community(start=14, end=18)
+        self.assertFalse(community_is_in_activity_window(community, now=_at(12, 0)))
+        self.assertTrue(community_is_in_activity_window(community, now=_at(15, 0)))
+
+    def test_partial_override_falls_back(self):
+        # Only start_hour set (not end) → treat as no override.
+        from app.core.risk_control import community_is_in_activity_window
+        from app.core import risk_control as rc_mod
+        community = self._make_community(start=6, end=None)
+        with patch.object(rc_mod, "default_risk_control", _OffHoursStub()):
+            self.assertFalse(community_is_in_activity_window(community, now=_at(9, 0)))
+
+
+class CommunityActivityWindowYamlParseTests(unittest.TestCase):
+    """YAML loader extracts activity_window override correctly."""
+
+    def test_parses_valid_window(self):
+        from app.storage.config_loader import _parse_activity_window
+        out = _parse_activity_window({"start_hour_tpe": 8, "end_hour_tpe": 23})
+        self.assertEqual(out, {"activity_start_hour_tpe": 8, "activity_end_hour_tpe": 23})
+
+    def test_rejects_out_of_range(self):
+        from app.storage.config_loader import _parse_activity_window
+        out = _parse_activity_window({"start_hour_tpe": 25, "end_hour_tpe": -1})
+        self.assertEqual(out, {})
+
+    def test_ignores_non_dict(self):
+        from app.storage.config_loader import _parse_activity_window
+        self.assertEqual(_parse_activity_window(None), {})
+        self.assertEqual(_parse_activity_window("08:00"), {})
+
+
 if __name__ == "__main__":
     unittest.main()

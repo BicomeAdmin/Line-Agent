@@ -9,7 +9,10 @@ from pathlib import Path
 from app.storage.paths import reviews_state_path
 
 ACTIVE_REVIEW_STATUSES = {"pending", "edit_required", "pending_reapproval"}
-TERMINAL_REVIEW_STATUSES = {"sent", "ignored"}
+# "recalled" = operator approved (or was about to) and then regretted.
+# Terminal because we can't actually un-send a LINE message via API; the
+# status is an audit-trail marker, not a guarantee the message is gone.
+TERMINAL_REVIEW_STATUSES = {"sent", "ignored", "recalled"}
 
 
 @dataclass
@@ -135,6 +138,7 @@ def review_status_label(status: str) -> str:
         "pending_reapproval": "待二次審核",
         "sent": "已送出",
         "ignored": "已忽略",
+        "recalled": "已撤回",
     }
     return labels.get(status, status)
 

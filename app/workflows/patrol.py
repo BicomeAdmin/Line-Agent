@@ -9,12 +9,20 @@ from app.workflows.draft_reply import draft_reply_for_device
 
 
 def patrol_device(device_id: str) -> dict[str, object]:
+    from app.core.risk_control import community_is_in_activity_window
+
     device = get_device_config(device_id)
     customer = load_customer_config(device.customer_id)
     communities = load_communities_for_device(device_id)
-    risk_control = load_risk_control()
+    # load_risk_control() retained as a side-effect-free no-op kept for API
+    # compatibility — risk_control gates moved into per-community helpers.
+    load_risk_control()
 
-    if not risk_control.is_activity_time():
+    # If NO community on this device is in its (possibly overridden) window,
+    # short-circuit before touching ADB. As soon as any one is in-window we
+    # proceed; per-community gates inside patrol_community will skip the
+    # remaining out-of-window ones.
+    if communities and not any(community_is_in_activity_window(c) for c in communities):
         result = {
             "status": "skipped",
             "device_id": device_id,
@@ -58,8 +66,8 @@ def patrol_device(device_id: str) -> dict[str, object]:
 
 
 def patrol_community(community: CommunityConfig) -> dict[str, object]:
-    risk_control = load_risk_control()
-    if not risk_control.is_activity_time():
+    from app.core.risk_control import community_is_in_activity_window
+    if not community_is_in_activity_window(community):
         result = {
             "status": "skipped",
             "community_id": community.community_id,

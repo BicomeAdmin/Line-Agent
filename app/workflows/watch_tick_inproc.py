@@ -45,22 +45,31 @@ def tick_one_inprocess(watch: dict[str, object]) -> dict[str, object]:
     last_draft = float(watch.get("last_draft_epoch") or 0)
     last_signature = watch.get("last_seen_signature") or ""
 
-    from app.core.risk_control import default_risk_control
-    if not default_risk_control.is_activity_time():
+    # Load community first so we can honor its per-community activity-window
+    # override before any ADB / navigate work. YAML read is cheap; navigate
+    # to a chat we're not allowed to act on would be wasted I/O.
+    try:
+        community = load_community_config(customer_id, community_id)
+    except Exception as exc:  # noqa: BLE001
+        return {"acted": False, "reason": f"community_lookup_failed:{exc}"}
+
+    from app.core.risk_control import community_is_in_activity_window, default_risk_control
+    if not community_is_in_activity_window(community):
+        start = community.activity_start_hour_tpe
+        end = community.activity_end_hour_tpe
+        if start is not None and end is not None:
+            window_label = f"{start:02d}:00-{end:02d}:00 Asia/Taipei (community override)"
+        else:
+            window_label = f"{default_risk_control.activity_start.strftime('%H:%M')}-{default_risk_control.activity_end.strftime('%H:%M')} Asia/Taipei"
         return {
             "acted": False,
             "reason": "outside_activity_hours",
-            "activity_window": f"{default_risk_control.activity_start.strftime('%H:%M')}-{default_risk_control.activity_end.strftime('%H:%M')} Asia/Taipei",
+            "activity_window": window_label,
         }
 
     nav = navigate_to_openchat(customer_id, community_id, overall_timeout_seconds=20.0)
     if nav.get("status") != "ok":
         return {"acted": False, "reason": f"navigate_failed:{nav.get('reason')}"}
-
-    try:
-        community = load_community_config(customer_id, community_id)
-    except Exception as exc:  # noqa: BLE001
-        return {"acted": False, "reason": f"community_lookup_failed:{exc}"}
 
     try:
         messages = read_recent_chat(

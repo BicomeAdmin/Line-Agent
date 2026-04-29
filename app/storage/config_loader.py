@@ -63,6 +63,12 @@ class CommunityConfig:
     auto_watch_duration_minutes: int = 720
     auto_watch_cooldown_seconds: int = 600
     auto_watch_poll_interval_seconds: int = 60
+    # Per-community activity window override (Asia/Taipei hours). Both must
+    # be set to take effect; otherwise the community defers to the global
+    # window in `risk_control.yaml`. Configured via `activity_window: {start_hour_tpe, end_hour_tpe}`
+    # in the community YAML.
+    activity_start_hour_tpe: int | None = None
+    activity_end_hour_tpe: int | None = None
 
 
 def load_devices_config() -> list[DeviceConfig]:
@@ -133,8 +139,29 @@ def load_community_config(customer_id: str, community_id: str) -> CommunityConfi
         operator_nickname=str(payload["operator_nickname"]).strip() if isinstance(payload.get("operator_nickname"), str) and payload.get("operator_nickname") else None,
         operator_aliases=_parse_operator_aliases(payload.get("operator_aliases")),
         **_parse_auto_watch(payload.get("auto_watch")),
+        **_parse_activity_window(payload.get("activity_window")),
     )
     return _apply_runtime_calibration(config)
+
+
+def _parse_activity_window(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, object] = {}
+    for key, dest in (
+        ("start_hour_tpe", "activity_start_hour_tpe"),
+        ("end_hour_tpe", "activity_end_hour_tpe"),
+    ):
+        raw = value.get(key)
+        if raw is None:
+            continue
+        try:
+            hour = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= hour <= 23:
+            out[dest] = hour
+    return out
 
 
 def _parse_operator_aliases(value: object) -> tuple[str, ...]:
@@ -274,4 +301,6 @@ def _rebuild_community_config(
         auto_watch_duration_minutes=config.auto_watch_duration_minutes,
         auto_watch_cooldown_seconds=config.auto_watch_cooldown_seconds,
         auto_watch_poll_interval_seconds=config.auto_watch_poll_interval_seconds,
+        activity_start_hour_tpe=config.activity_start_hour_tpe,
+        activity_end_hour_tpe=config.activity_end_hour_tpe,
     )

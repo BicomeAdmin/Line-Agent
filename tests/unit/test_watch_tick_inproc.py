@@ -29,7 +29,7 @@ class _FakeRiskControl:
         from datetime import time as dt_time
         self.activity_start = dt_time(9, 0)
         self.activity_end = dt_time(23, 0)
-    def is_activity_time(self) -> bool:
+    def is_activity_time(self, now=None) -> bool:
         return self.in_window
 
 

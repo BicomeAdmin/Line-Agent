@@ -54,6 +54,24 @@ def main() -> int:
     ensure_job_worker()
     print(f"[scheduler] starting, interval={args.interval_seconds}s", flush=True)
 
+    # Onboarding readiness: warn (don't block) when a community has auto_watch
+    # enabled but is missing critical setup (operator_nickname, voice profile,
+    # invite_url/group_id). Otherwise the watcher would compose drafts for a
+    # community where it doesn't even know who the operator is.
+    try:
+        from app.workflows.onboarding_status import build_onboarding_report
+        _onboarding = build_onboarding_report()
+        for _row in _onboarding.auto_watch_with_gaps:
+            print(
+                f"[scheduler] WARNING: auto_watch is on for {_row.community_id} "
+                f"({_row.display_name}) but missing: {', '.join(_row.critical_gaps)}. "
+                f"Run scripts/onboarding_status.py for details.",
+                flush=True,
+                file=sys.stderr,
+            )
+    except Exception as exc:  # noqa: BLE001 — diagnostic only, never block boot
+        print(f"[scheduler] onboarding check skipped: {exc!r}", flush=True, file=sys.stderr)
+
     # Catch a common misconfiguration: ECHO_LLM_ENABLED=true but no API key.
     # is_enabled() silently returns False in that case, so every draft falls
     # back to the rule-based template without any signal to the operator.

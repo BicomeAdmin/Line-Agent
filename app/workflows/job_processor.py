@@ -366,6 +366,28 @@ def _approve_send(job_id: str, source_result: dict[str, object] | None, action_p
     community_id = _resolve_action_value("community_id", source_result, action_payload)
     device_id = _resolve_action_value("device_id", source_result, action_payload)
 
+    # Recall guard: if the operator unapproved this review between approve
+    # and the job firing, the review is now `recalled`. Bail out before
+    # navigate / send_draft so we don't push a draft the operator already
+    # rejected. Race window is small (sub-second) but real.
+    # Note: `review_id == job_id` per _update_review_from_action.
+    from app.core.reviews import review_store
+    existing = review_store.get(job_id)
+    if existing is not None and existing.status == "recalled":
+        append_audit_event(
+            customer_id,
+            "approve_send_aborted_recalled",
+            {"job_id": job_id, "review_id": job_id, "community_id": community_id},
+        )
+        return {
+            "status": "aborted",
+            "job_id": job_id,
+            "action": "send",
+            "community_id": community_id,
+            "device_id": device_id,
+            "reason": "review_recalled",
+        }
+
     # Preflight: navigate to the target chat before sending. Approval can land
     # minutes/hours after the original draft was prepared, so we don't trust
     # that LINE is still on the right room. Cheap insurance: re-navigate.
