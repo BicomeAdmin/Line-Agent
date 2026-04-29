@@ -11,3 +11,10 @@ input_y: null
 send_x: null
 send_y: null
 operator_nickname: "妍"
+auto_watch:
+  enabled: true
+  start_hour_tpe: 10
+  end_hour_tpe: 22
+  duration_minutes: 720      # 12h: 10:00 → 22:00 TPE
+  cooldown_seconds: 1200     # 20 min — 道場群調性沉穩，少打擾
+  poll_interval_seconds: 90  # 90s — 對話節奏慢，不需密集掃
