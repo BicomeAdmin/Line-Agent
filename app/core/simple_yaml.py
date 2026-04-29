@@ -98,7 +98,28 @@ def _parse_mapping(lines: list[_Line], index: int, indent: int) -> tuple[dict[st
 
 def _split_key_value(content: str) -> tuple[str, str]:
     key, _, value = content.partition(":")
-    return key.strip(), value.strip()
+    return key.strip(), _strip_inline_comment(value.strip())
+
+
+def _strip_inline_comment(value: str) -> str:
+    """Drop YAML-style inline comments. Per YAML spec a comment marker `#`
+    must be preceded by whitespace; leave fragments inside quoted strings
+    (e.g. URLs with `#anchor`) untouched.
+    """
+
+    if not value:
+        return value
+    if value[0] in {'"', "'"}:
+        quote = value[0]
+        end = value.find(quote, 1)
+        if end == -1:
+            return value
+        return value[: end + 1]
+    for marker in (" #", "\t#"):
+        idx = value.find(marker)
+        if idx != -1:
+            return value[:idx].rstrip()
+    return value
 
 
 def _parse_scalar(value: str) -> object:
