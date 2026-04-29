@@ -132,6 +132,23 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"[scheduler] dashboard_push error={exc!r}", flush=True, file=sys.stderr)
 
+        # Cold-spell heartbeat: low-frequency check (every ~60 cycles ≈ 1h
+        # at default 60s loop). Pushes a Lark alert when a community has
+        # been silent for >12h since last analyze. Internal cooldown means
+        # repeated calls within 24h don't spam the operator.
+        if cycles % 60 == 0:
+            try:
+                from app.workflows.cold_spell_alert import run_heartbeat
+                hb = run_heartbeat()
+                if hb.alerted:
+                    ids = ",".join(c.community_id for c in hb.alerted)
+                    print(
+                        f"[scheduler] cold_spell_alert pushed for: {ids} (lark={'ok' if hb.pushed_lark else 'skip'})",
+                        flush=True,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[scheduler] cold_spell_heartbeat error={exc!r}", flush=True, file=sys.stderr)
+
         # Auto-watch: opt-in per community.yaml.
         try:
             _maybe_run_auto_watch()
