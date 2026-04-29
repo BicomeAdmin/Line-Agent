@@ -89,6 +89,12 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"[scheduler] dashboard_push error={exc!r}", flush=True, file=sys.stderr)
 
+        # Auto-watch: opt-in per community.yaml.
+        try:
+            _maybe_run_auto_watch()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[scheduler] auto_watch error={exc!r}", flush=True, file=sys.stderr)
+
         # Sleep in 1s slices so SIGTERM/SIGINT exits within a second.
         slept = 0
         while slept < args.interval_seconds and not _stopping:
@@ -160,6 +166,24 @@ def _maybe_push_dashboard_notifications() -> None:
             print(f"[scheduler] aging_alerts pushed: {len(aged)}", flush=True)
         except LarkClientError as exc:
             print(f"[scheduler] aging_alert lark error={exc}", flush=True, file=sys.stderr)
+
+
+def _maybe_run_auto_watch() -> None:
+    """Per-community opt-in auto-watch (start at start_hour_tpe, stop at end_hour_tpe).
+
+    Reads each community.yaml's `auto_watch` block. Default OFF — no community
+    auto-starts unless explicitly enabled. HIL gate is unaffected; this only
+    decides *when watches run*, never bypassing review_store.
+    """
+
+    from app.workflows.auto_watch import run_auto_watch_cycle
+    result = run_auto_watch_cycle()
+    if result.started:
+        names = ",".join(str(w.get("community_id")) for w in result.started)
+        print(f"[scheduler] auto_watch_started: {names}", flush=True)
+    if result.stopped:
+        names = ",".join(str(w.get("community_id")) for w in result.stopped)
+        print(f"[scheduler] auto_watch_stopped: {names}", flush=True)
 
 
 if __name__ == "__main__":

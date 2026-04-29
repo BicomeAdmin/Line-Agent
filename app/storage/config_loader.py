@@ -48,6 +48,15 @@ class CommunityConfig:
     # we don't have the runtime is_self flag from the LINE UI parser).
     # E.g. operator might be "比利" in 愛美星 but "山寶" in 山納百景.
     operator_nickname: str | None = None
+    # Per-community opt-in: at start_hour TPE, scheduler auto-starts a watch
+    # that runs until end_hour. Default OFF — operator opts in per community
+    # by setting auto_watch.enabled: true in the community YAML.
+    auto_watch_enabled: bool = False
+    auto_watch_start_hour_tpe: int = 10
+    auto_watch_end_hour_tpe: int = 22
+    auto_watch_duration_minutes: int = 720
+    auto_watch_cooldown_seconds: int = 600
+    auto_watch_poll_interval_seconds: int = 60
 
 
 def load_devices_config() -> list[DeviceConfig]:
@@ -116,8 +125,30 @@ def load_community_config(customer_id: str, community_id: str) -> CommunityConfi
         invite_url=str(payload["invite_url"]) if isinstance(payload.get("invite_url"), str) and payload.get("invite_url") else None,
         group_id=str(payload["group_id"]) if isinstance(payload.get("group_id"), str) and payload.get("group_id") else None,
         operator_nickname=str(payload["operator_nickname"]).strip() if isinstance(payload.get("operator_nickname"), str) and payload.get("operator_nickname") else None,
+        **_parse_auto_watch(payload.get("auto_watch")),
     )
     return _apply_runtime_calibration(config)
+
+
+def _parse_auto_watch(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, object] = {}
+    if "enabled" in value:
+        out["auto_watch_enabled"] = bool(value["enabled"])
+    for key, dest in (
+        ("start_hour_tpe", "auto_watch_start_hour_tpe"),
+        ("end_hour_tpe", "auto_watch_end_hour_tpe"),
+        ("duration_minutes", "auto_watch_duration_minutes"),
+        ("cooldown_seconds", "auto_watch_cooldown_seconds"),
+        ("poll_interval_seconds", "auto_watch_poll_interval_seconds"),
+    ):
+        if key in value and value[key] is not None:
+            try:
+                out[dest] = int(value[key])
+            except (TypeError, ValueError):
+                continue
+    return out
 
 
 def load_communities_for_device(device_id: str) -> list[CommunityConfig]:
