@@ -149,9 +149,15 @@ def _process_lark_action(payload: dict[str, object]) -> dict[str, object]:
             result["decision"] = source_job.result["decision"]
     if action == "send":
         result = _approve_send(job_id, source_job.result if source_job is not None else None, payload)
+        # Capture approve as positive feedback signal (edit_feedback loop).
+        _record_outcome_safe(job_id, action="approve")
     elif action == "ignore":
         result["status"] = "ignored"
         _update_review_from_action(job_id, payload, "ignored")
+        # Capture ignore as negative signal — without this the system is
+        # blind to bad drafts that operator silently dismissed (fixed
+        # 2026-04-29 after selector mis-fire on openchat_002).
+        _record_outcome_safe(job_id, action="ignore")
     elif action == "edit":
         edited_text = payload.get("edited_draft_text")
         if isinstance(edited_text, str) and edited_text.strip():
@@ -578,6 +584,27 @@ def _review_record_from_result(job_id: str, result: dict[str, object]) -> Review
         confidence=float(decision["confidence"]) if isinstance(decision.get("confidence"), (int, float)) else None,
         status="pending",
     )
+
+
+def _record_outcome_safe(job_id: str, *, action: str) -> None:
+    """Best-effort write of an approve/ignore signal to edit_feedback.
+    Lazy-imports to match record_edit pattern + keeps the action flow
+    insulated from feedback recording errors."""
+
+    try:
+        from app.workflows.edit_feedback import record_review_outcome
+        review = review_store.get(job_id)
+        if review is None or not review.draft_text:
+            return
+        record_review_outcome(
+            review.customer_id,
+            review.community_id,
+            job_id,
+            action=action,
+            original_draft=review.draft_text,
+        )
+    except Exception:  # noqa: BLE001 — feedback recording must never break action flow
+        pass
 
 
 def _update_review_from_action(job_id: str, action_payload: dict[str, object], status: str, draft_text: str | None = None) -> None:

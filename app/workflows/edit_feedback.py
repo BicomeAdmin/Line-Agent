@@ -1,30 +1,36 @@
-"""Edit feedback loop — capture operator's edits as (original, edited)
-pairs for future compose conditioning.
+"""Review-outcome feedback loop — capture every operator decision
+(approve / edit / ignore) as a training signal for future compose.
 
-Paul's《私域流量》 Step 4「實時回饋優化」 made concrete: every time
-the operator hits 「修改」 on a Lark card, we save what the bot
-originally drafted vs what they sent. After accumulating ~5 pairs
-per community, future compose prompts include them as in-context
-learning examples — bot literally watches itself get edited and
-adjusts.
+Paul's《私域流量》 Step 4「實時回饋優化」 made concrete. Originally
+this only captured edits; that left the system blind to the most
+common negative signal — operator silently ignoring bad drafts
+(e.g. 2026-04-29 selector mis-fire). Now every action writes a row
+so future tuning sees the full picture:
+
+  approve : draft was fit-to-send as-is — positive signal
+  edit    : draft needed rewrite — operator's edited version is the
+            target; diff vs original surfaces patterns
+  ignore  : draft wasn't worth sending — selector / composer bug
+            signal, often the most actionable for tuning
 
 Storage: customers/<id>/data/edit_feedback/<community_id>.jsonl
-  Append-only JSON Lines, one record per edit.
+  Append-only JSON Lines, one record per outcome.
   Schema:
     {
       "ts_taipei": "...",
       "review_id": "...",
       "community_id": "...",
-      "original_draft": "...",
-      "edited_draft": "...",
-      "diff_summary": {... small heuristic deltas ...}
+      "action": "approve" | "edit" | "ignore",
+      "original_draft": "...",         # what the bot drafted
+      "edited_draft": "..." | null,    # only set for action=edit
+      "diff_summary": {...}            # only for action=edit
     }
 
-Why JSONL not JSON: append-only, easy to stream-tail, robust to
-crashes mid-write, easy to grep / cat for debugging.
+Records written before this schema landed lack the `action` field;
+load_recent_edits() treats those as edits for backward compat.
 
-Reading: load_recent_edits(customer_id, community_id, limit=5)
-returns the most-recent N pairs for prompt injection.
+Why JSONL: append-only, easy to stream-tail, robust to crashes
+mid-write, easy to grep / cat for debugging.
 """
 
 from __future__ import annotations
@@ -42,6 +48,68 @@ def edit_feedback_path(customer_id: str, community_id: str) -> Path:
     return customer_data_root(customer_id) / "edit_feedback" / f"{community_id}.jsonl"
 
 
+_VALID_ACTIONS = ("approve", "edit", "ignore")
+
+
+def record_review_outcome(
+    customer_id: str,
+    community_id: str,
+    review_id: str,
+    action: str,
+    *,
+    original_draft: str,
+    edited_draft: str | None = None,
+) -> dict[str, object]:
+    """Append a review outcome to the feedback log. Action is one of
+    approve / edit / ignore. For action=edit, edited_draft must differ
+    from original_draft; otherwise the record is skipped (no signal)."""
+
+    if action not in _VALID_ACTIONS:
+        return {"status": "skipped", "reason": f"unknown_action:{action}"}
+    if not original_draft or not original_draft.strip():
+        return {"status": "skipped", "reason": "empty_original"}
+
+    original = original_draft.strip()
+    edited: str | None = None
+    diff: dict[str, object] = {}
+
+    if action == "edit":
+        if not edited_draft or not edited_draft.strip():
+            return {"status": "skipped", "reason": "empty_edited"}
+        edited = edited_draft.strip()
+        if original == edited:
+            return {"status": "skipped", "reason": "no_change"}
+        diff = _summarize_diff(original, edited)
+
+    record: dict[str, object] = {
+        "ts_taipei": datetime.now(TAIPEI).strftime("%Y-%m-%d %H:%M:%S"),
+        "review_id": review_id,
+        "community_id": community_id,
+        "action": action,
+        "original_draft": original,
+        "edited_draft": edited,
+    }
+    if diff:
+        record["diff_summary"] = diff
+
+    path = edit_feedback_path(customer_id, community_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    append_audit_event(
+        customer_id,
+        "review_outcome_recorded",
+        {
+            "community_id": community_id,
+            "review_id": review_id,
+            "action": action,
+            "diff_summary": diff or None,
+        },
+    )
+    return {"status": "ok", "stored_at": str(path), "record": record}
+
+
 def record_edit(
     customer_id: str,
     community_id: str,
@@ -49,40 +117,17 @@ def record_edit(
     original_draft: str,
     edited_draft: str,
 ) -> dict[str, object]:
-    """Append an edit pair to the feedback log. Idempotent on
-    review_id — re-recording the same review with new edit text
-    will create a new line (we keep edit history)."""
+    """Backward-compatible wrapper for the original edit-only API.
+    New code should call record_review_outcome directly."""
 
-    if not original_draft or not edited_draft:
-        return {"status": "skipped", "reason": "empty_drafts"}
-    if original_draft.strip() == edited_draft.strip():
-        return {"status": "skipped", "reason": "no_change"}
-
-    path = edit_feedback_path(customer_id, community_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    record = {
-        "ts_taipei": datetime.now(TAIPEI).strftime("%Y-%m-%d %H:%M:%S"),
-        "review_id": review_id,
-        "community_id": community_id,
-        "original_draft": original_draft.strip(),
-        "edited_draft": edited_draft.strip(),
-        "diff_summary": _summarize_diff(original_draft.strip(), edited_draft.strip()),
-    }
-
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-    append_audit_event(
+    return record_review_outcome(
         customer_id,
-        "edit_feedback_recorded",
-        {
-            "community_id": community_id,
-            "review_id": review_id,
-            "diff_summary": record["diff_summary"],
-        },
+        community_id,
+        review_id,
+        action="edit",
+        original_draft=original_draft,
+        edited_draft=edited_draft,
     )
-    return {"status": "ok", "stored_at": str(path), "record": record}
 
 
 def load_recent_edits(
@@ -92,14 +137,17 @@ def load_recent_edits(
     limit: int = 5,
 ) -> list[dict[str, object]]:
     """Return the most-recent N edit pairs for this community.
-    Used to inject into compose prompt as in-context learning."""
+    Used to inject into compose prompt as in-context learning.
+    Filters to action=edit (or legacy records without action field)
+    so approve/ignore rows don't pollute the prompt's edit examples."""
 
     path = edit_feedback_path(customer_id, community_id)
     if not path.exists():
         return []
+    # Read more than `limit` so the action filter still has runway.
     lines = path.read_text(encoding="utf-8").splitlines()
-    out: list[dict[str, object]] = []
-    for raw in lines[-limit * 3:]:  # read 3x the cap, then dedupe and trim
+    edits: list[dict[str, object]] = []
+    for raw in lines[-limit * 10:]:
         raw = raw.strip()
         if not raw:
             continue
@@ -107,8 +155,43 @@ def load_recent_edits(
             rec = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        out.append(rec)
+        action = rec.get("action")
+        # Legacy records (pre-2026-04-29 schema) have no action field
+        # but ARE all edits — keep them for backward compat.
+        if action is None or action == "edit":
+            edits.append(rec)
     # Most-recent first, capped at `limit`
+    return edits[-limit:][::-1]
+
+
+def load_recent_outcomes(
+    customer_id: str,
+    community_id: str,
+    *,
+    limit: int = 20,
+    actions: tuple[str, ...] | None = None,
+) -> list[dict[str, object]]:
+    """Return the most-recent N outcomes (any action). Useful for
+    diagnostics and selector-tuning analysis."""
+
+    path = edit_feedback_path(customer_id, community_id)
+    if not path.exists():
+        return []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    out: list[dict[str, object]] = []
+    for raw in lines[-limit * 5:]:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if actions is not None:
+            action = rec.get("action") or "edit"  # legacy records
+            if action not in actions:
+                continue
+        out.append(rec)
     return out[-limit:][::-1]
 
 
