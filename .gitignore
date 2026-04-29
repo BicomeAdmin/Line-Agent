@@ -9,3 +9,6 @@ __pycache__/
 # Voice profiles + community YAML are operator-curated and live in customers/<id>/{communities,voice_profiles,personas,playbooks,souls}/ — those stay tracked.
 # Everything under customers/<id>/data/ is runtime mutable state and gets ignored.
 customers/*/data/
+
+# State backups (rotating tar.gz from scripts/backup_state.py)
+backups/

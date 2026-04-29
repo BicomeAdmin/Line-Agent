@@ -27,9 +27,13 @@ This file is the lightweight engineering log for Project Echo.
 - **T2.4 Stylometric extension** (commit `ed35fd5`) — MemberFingerprint 從 3 維擴到 11+ 維: function_word_freq (~25 zh-TW chat 虛詞 per 100 chars), punctuation_signature (counts per ！?～。，、…), line_break_rate, multi_msg_burst_rate, type_token_ratio (Han bigram MTLD-style), typo_signature (ㄉ/ㄅ/ㄋ/降/醬/蝦米 patterns), avg_punct_per_msg, repeated_punct_rate. Live: 山長王志鈞 「降_for_這樣」×2 typo caught; 許芳旋 「我」 self-reference 2.76% 抓到; ttr 區分 0.68 (教學重複型) vs 0.91 (閒聊多樣型).
 - **T2.5 Bezier swipe** (commit `a1b67dd`) — quadratic Bezier curve via `input motionevent DOWN/MOVE/UP` (verified working on API 35 emulator). 12 sampling points, smooth-step easing on t, ±25% perpendicular offset, ±4 px endpoint jitter. Falls back to standard `input swipe` on older API. openchat_navigate scroll calls upgraded.
 
+### Tier 3 — Operations / safety
+
+- **#15 State backup** (`scripts/backup_state.py` + `app/workflows/backup_state.py`) — rotating tar.gz of `.project_echo/`, `customers/*/data/`, `configs/`. Excludes `raw_xml/` (regenerable), `__pycache__`, `.DS_Store`, `cleaned_messages/`, `llm_outputs/`, `prompts/`. Excludes `.env` (credentials handled separately). Default keep=14, configurable via `--keep`. Each run writes `state_backup_created` audit event. Cron suggestion documented in CLAUDE.md §4.4. First live run: 48 files / 0.16 MiB. Rationale: harden before watcher autonomy at 10:00 — protect Tier 1+2 outputs against accidents.
+
 ### Validated (this session)
 
-- 264/264 unit tests green (was 240 at session start, +24 tests added across 10 commits).
+- 267/267 unit tests green (was 240 at session start, +27 tests across 11 commits — last 3 from backup_state).
 - All 5 communities (openchat_001/002/003/004/005) have:
   - operator_nickname configured (比利 / 阿樂2 / 愛莎 / 妍 / Eric_營運)
   - chat_export imported with full sender attribution

@@ -237,6 +237,46 @@ bash scripts/start_services.sh status    # 看誰在跑
 - Log 在 `/tmp/scheduler_daemon.log` / `/tmp/lark_bridge.log` / `/tmp/web_dashboard.log`
 - 本機儀表板：http://localhost:8080（read-only，HIL 通道仍走 Lark / CLI）
 
+### 4.4 Auto-Watch（每社群 opt-in 自動啟停）
+
+每個 community.yaml 可加：
+```yaml
+auto_watch:
+  enabled: true              # 預設 false
+  start_hour_tpe: 10         # 早上 10 點 ±5 分內 daemon 自動 start_watch
+  end_hour_tpe: 22           # 晚上 22 點後自動 stop（標記 auto_watch_end_of_day）
+  duration_minutes: 720      # 預設 12h（從 start_hour 起算）
+  cooldown_seconds: 600      # 同 watch 內兩次草稿間至少間隔
+  poll_interval_seconds: 60
+```
+
+**保證**：
+- HIL 不變 — auto-watch 只決定「watch 何時開」，所有草稿仍走 review_store
+- 預設 OFF — 全部社群必須操作員逐一 opt in
+- Idempotent — 同一天不會雙啟動（marker 檔在 `data/auto_watches/<community>__<YYYY-MM-DD>.txt`）
+- Auto stop 只動 auto_watch 自己起的 watch，不碰你手動 start 的
+
+開啟前的判斷：哪個社群你願意「整天讓 watcher 自主推草稿給你審」？建議從低敏感、規律性高的社群（003 山納百景 / 004 水月觀音）開始試 1-2 天，再擴。
+
+### 4.5 State 備份
+
+```bash
+python3 scripts/backup_state.py            # 打包到 backups/echo-state-<UTC ts>.tar.gz
+python3 scripts/backup_state.py --keep 30  # 改保留份數（預設 14）
+python3 scripts/backup_state.py --json     # 機器可讀輸出
+```
+
+打包內容：`.project_echo/`、`customers/*/data/`（含 audit / fingerprints / lifecycle / KPI / watches / chat_exports / scheduled_posts）、`configs/`。
+排除：`raw_xml/`（可從 LINE UI 重生）、`__pycache__`、`.DS_Store`、`cleaned_messages/`、`llm_outputs/`、`prompts/`。
+**不包 `.env`**——憑證走另案處理（手動 1Password / 加密 vault），不混進 routine backup。
+
+每次成功備份寫一筆 `state_backup_created` 進 audit。`backups/` 已加 .gitignore。
+
+建議掛 cron（每天 03:00 TPE = 19:00 UTC）：
+```
+0 19 * * * cd "/Users/bicometech/Code/Line Agent" && /usr/bin/python3 scripts/backup_state.py >> /tmp/echo_backup.log 2>&1
+```
+
 ---
 
 ## 5. Lark 通道（操作員審核介面）
