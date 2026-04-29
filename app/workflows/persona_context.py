@@ -72,6 +72,10 @@ def get_persona_context(
         getattr(community, "operator_nickname", None)
         or _extract_nickname(voice_profile_text)
     )
+    # Additional operator identities in this community (e.g. internal
+    # test account). reply_target_selector dedupes on this list to avoid
+    # scoring operator's own historical messages as reply targets.
+    aliases = tuple(getattr(community, "operator_aliases", ()) or ())
     personality = _extract_personality(voice_profile_text)
     off_limits = _extract_off_limits(voice_profile_text)
     style_anchors = _extract_section(voice_profile_text, "Style anchors")
@@ -155,6 +159,7 @@ def get_persona_context(
             "loaded": voice_profile_loaded,
             "path": str(vp_path),
             "nickname": nickname,
+            "aliases": list(aliases),
             "personality": personality,
             "style_anchors": style_anchors,
             "off_limits": off_limits,

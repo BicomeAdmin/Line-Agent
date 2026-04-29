@@ -136,12 +136,16 @@ def select_reply_target(
         return TargetDecision(target=None, threshold=threshold, all_scored=[], skip_reason="no_messages")
 
     operator_nickname = ""
+    operator_aliases: tuple[str, ...] = ()
     operator_recent_texts: list[str] = []
     operator_keywords: set[str] = set()
     operator_anchor_texts: list[str] = []  # for embedding similarity
     if operator_persona and operator_persona.get("status") == "ok":
         vp = operator_persona.get("voice_profile") or {}
         operator_nickname = (vp.get("nickname") or "").strip()
+        operator_aliases = tuple(
+            str(a).strip() for a in (vp.get("aliases") or []) if str(a).strip()
+        )
         recent = operator_persona.get("recent_self_posts") or []
         operator_recent_texts = [str(r.get("text") or "") for r in recent]
         anchor_lines = (vp.get("style_anchors") or "").splitlines()
@@ -180,19 +184,20 @@ def select_reply_target(
             if isinstance(c, dict) and c.get("sender"):
                 koc_set.add(c["sender"])
 
-    # Build operator-utterance set from chat tail. Two paths:
+    # Build operator-utterance set from chat tail. Three paths:
     #   (a) is_self flag — set by line_chat_parser when the parser saw a
     #       chat_ui_message_text (operator's own bubble). Most reliable.
-    #   (b) Sender name contains the operator nickname configured for
-    #       this community. Fallback for messages parsed without is_self
-    #       (legacy parser, chat exports, etc.).
+    #   (b) Synthetic __operator__ marker.
+    #   (c) Sender name matches operator_nickname OR any operator_alias
+    #       configured for this community. Fallback for messages parsed
+    #       without is_self (legacy parser, chat exports, etc.).
+    #
+    # Substring match (`name in sender`) handles cases where LINE shows
+    # the nickname with role-badge suffixes like "比利 本尊" / "阿樂 本尊".
+    operator_names = _operator_name_set(operator_nickname, operator_aliases)
     operator_in_chat_indices = {
         i for i, m in enumerate(messages)
-        if (
-            bool(m.get("is_self"))
-            or str(m.get("sender") or "") == "__operator__"
-            or (operator_nickname and operator_nickname in str(m.get("sender") or ""))
-        )
+        if _is_operator_message(m, operator_names)
     }
 
     candidates: list[TargetCandidate] = []
@@ -285,8 +290,8 @@ def select_reply_target(
                 score -= 2.0
                 reasons.append(f"emotion_disgust:-2.0(p={score_e:.2f})")
 
-        # Direct @-mention to operator.
-        if operator_nickname and (f"@{operator_nickname}" in text or operator_nickname in text):
+        # Direct @-mention to operator (any of operator's known names).
+        if any((f"@{name}" in text or name in text) for name in operator_names):
             score += 5.0
             reasons.append("mentions_operator:+5.0")
 
@@ -294,7 +299,7 @@ def select_reply_target(
         is_question = bool(_QUESTION_RE.search(text))
         if is_question:
             answered_after = _has_answer_within(messages, i, lookahead=5, exclude_sender=sender)
-            operator_in_thread = _operator_was_in_recent(messages, i, operator_nickname, lookback=8)
+            operator_in_thread = _operator_was_in_recent(messages, i, operator_names, lookback=8)
             if not answered_after and operator_in_thread:
                 score += 3.5
                 reasons.append("unanswered_q_in_op_thread:+3.5")
@@ -303,19 +308,10 @@ def select_reply_target(
                 reasons.append("question_in_op_thread:+1.5")
 
         # Operator was last to speak before this message — someone is
-        # following up on what we said. Detect via is_self flag (parser-
-        # supplied) or nickname-match fallback.
-        if i >= 1:
-            prev_msg = messages[i - 1]
-            prev_sender = str(prev_msg.get("sender") or "")
-            prev_is_op = (
-                bool(prev_msg.get("is_self"))
-                or prev_sender == "__operator__"
-                or (operator_nickname and operator_nickname in prev_sender)
-            )
-            if prev_is_op:
-                score += 2.5
-                reasons.append("after_operator_speech:+2.5")
+        # following up on what we said.
+        if i >= 1 and _is_operator_message(messages[i - 1], operator_names):
+            score += 2.5
+            reasons.append("after_operator_speech:+2.5")
 
         # Topic overlap — prefer semantic similarity (BGE), fall back
         # to bigram intersection. Both end up as a single +1.5 signal,
@@ -412,26 +408,47 @@ def _has_answer_within(messages: Sequence[dict], idx: int, *, lookahead: int, ex
     return False
 
 
-def _operator_was_in_recent(messages: Sequence[dict], idx: int, operator_nickname: str, *, lookback: int) -> bool:
+def _operator_was_in_recent(messages: Sequence[dict], idx: int, operator_names: set[str], *, lookback: int) -> bool:
     """True if any message in [idx-lookback, idx) was sent by the operator.
-    Uses is_self flag, __operator__ sentinel, or nickname match."""
+    Uses is_self flag, __operator__ sentinel, or any-alias substring match."""
 
     start = max(0, idx - lookback)
     for j in range(start, idx):
-        msg = messages[j]
-        if msg.get("is_self"):
-            return True
-        sender = str(msg.get("sender") or "")
-        if sender == "__operator__":
-            return True
-        if operator_nickname and operator_nickname in sender:
+        if _is_operator_message(messages[j], operator_names):
             return True
     return False
 
 
-def _previous_non_self(messages: Sequence[dict], idx: int, operator_nickname: str) -> int | None:
-    for j in range(idx - 1, -1, -1):
-        s = str(messages[j].get("sender") or "")
-        if not (operator_nickname and operator_nickname in s):
-            return j
-    return None
+def _operator_name_set(nickname: str, aliases: tuple[str, ...]) -> set[str]:
+    """Build the canonical set of operator-identifying names. Includes the
+    primary nickname plus any aliases declared on the community config.
+    Empty strings are dropped so we don't degenerate to "match everything"."""
+
+    names: set[str] = set()
+    if nickname:
+        names.add(nickname.strip())
+    for a in aliases:
+        s = (a or "").strip()
+        if s:
+            names.add(s)
+    return {n for n in names if n}
+
+
+def _is_operator_message(msg: dict, operator_names: set[str]) -> bool:
+    """A message belongs to the operator if any of:
+      - is_self flag set by the live LINE UI parser
+      - synthetic __operator__ sentinel
+      - sender contains any operator-identifying name (substring match,
+        so 「比利 本尊」 matches nickname 「比利」 etc.)"""
+
+    if msg.get("is_self"):
+        return True
+    sender = str(msg.get("sender") or "")
+    if sender == "__operator__":
+        return True
+    if not sender:
+        return False
+    for name in operator_names:
+        if name and name in sender:
+            return True
+    return False

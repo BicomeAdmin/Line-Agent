@@ -10,10 +10,14 @@ def _msg(sender, text, position=0):
     return {"sender": sender, "text": text, "position": position}
 
 
-def _persona(nickname, recent_texts=None):
+def _persona(nickname, recent_texts=None, aliases=None):
     return {
         "status": "ok",
-        "voice_profile": {"nickname": nickname, "style_anchors": ""},
+        "voice_profile": {
+            "nickname": nickname,
+            "aliases": list(aliases or []),
+            "style_anchors": "",
+        },
         "recent_self_posts": [{"text": t} for t in (recent_texts or [])],
     }
 
@@ -286,6 +290,84 @@ class EmotionScoringTests(unittest.TestCase):
         if d.target is not None:
             for r in d.target.reasons:
                 self.assertFalse("emotion_" in r, msg=f"emotion below cutoff still fired: {r}")
+
+
+class OperatorAliasFilterTests(unittest.TestCase):
+    """Regression — root cause of 2026-04-29 11:04 mis-fire on openchat_002.
+
+    community.operator_nickname was "阿樂2" but operator also posts under
+    "阿樂 本尊" (Bicome internal test account). The substring match
+    `"阿樂2" in "阿樂 本尊"` is False, so 阿樂 本尊's old admin messages
+    were scored as a normal reply target and won at score 8.07 — the bot
+    nearly replied to operator's own historical post.
+
+    Fix: operator_aliases on CommunityConfig + voice_profile.aliases plumbed
+    into selector, treated identically to operator_nickname."""
+
+    def test_alias_sender_not_picked_as_reply_target(self):
+        msgs = [
+            _msg("阿樂 本尊", "求推薦這款好嗎"),  # would normally win on pain pattern
+            _msg("Alice", "我也在用"),
+        ]
+        d = select_reply_target(
+            msgs,
+            operator_persona=_persona("阿樂2", aliases=["阿樂 本尊"]),
+        )
+        if d.target is not None:
+            self.assertNotEqual(d.target.sender, "阿樂 本尊")
+
+    def test_alias_sender_excluded_even_without_primary_in_chat(self):
+        # The reproducer for 2026-04-29: only the alias appears, primary
+        # nickname doesn't show up in the recent window.
+        msgs = [
+            _msg("阿樂 本尊", "求推薦這款好嗎"),
+        ]
+        d = select_reply_target(
+            msgs,
+            operator_persona=_persona("阿樂2", aliases=["阿樂 本尊"]),
+        )
+        # No actionable target — operator's own post is the only one.
+        self.assertIsNone(d.target)
+
+    def test_alias_at_mention_still_boosts_when_someone_else_says_it(self):
+        # Someone @-mentions operator's alias — should boost as if they
+        # @-mentioned the primary nickname.
+        msgs = [
+            _msg("Alice", "@阿樂 本尊 你怎麼看"),
+        ]
+        d = select_reply_target(
+            msgs,
+            operator_persona=_persona("阿樂2", aliases=["阿樂 本尊"]),
+        )
+        self.assertIsNotNone(d.target)
+        self.assertEqual(d.target.sender, "Alice")
+        self.assertTrue(any("mentions_operator" in r for r in d.target.reasons))
+
+    def test_after_alias_speech_boosts(self):
+        # Alias was last to speak — Alice's follow-up should get the
+        # after_operator_speech boost.
+        msgs = [
+            _msg("阿樂 本尊", "我先去吃飯"),
+            _msg("Alice", "好喔等等再聊"),
+        ]
+        d = select_reply_target(
+            msgs,
+            operator_persona=_persona("阿樂2", aliases=["阿樂 本尊"]),
+        )
+        self.assertIsNotNone(d.target)
+        self.assertEqual(d.target.sender, "Alice")
+        self.assertTrue(any("after_operator_speech" in r for r in d.target.reasons))
+
+    def test_no_aliases_backward_compat(self):
+        # Existing communities without operator_aliases configured still
+        # behave identically to before this refactor.
+        msgs = [
+            _msg("阿樂", "我發的"),
+            _msg("Alice", "Alice 提問 是不是有人知道"),
+        ]
+        d = select_reply_target(msgs, operator_persona=_persona("阿樂"))
+        if d.target is not None:
+            self.assertNotEqual(d.target.sender, "阿樂")
 
 
 if __name__ == "__main__":

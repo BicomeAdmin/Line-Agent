@@ -48,6 +48,12 @@ class CommunityConfig:
     # we don't have the runtime is_self flag from the LINE UI parser).
     # E.g. operator might be "比利" in 愛美星 but "山寶" in 山納百景.
     operator_nickname: str | None = None
+    # Additional operator identities active in this community — e.g. an
+    # internal test account ("阿樂 本尊") used alongside the primary one
+    # ("阿樂2"). reply_target_selector treats every alias the same as
+    # operator_nickname so the bot doesn't suggest replying to its own
+    # historical messages. Empty by default.
+    operator_aliases: tuple[str, ...] = ()
     # Per-community opt-in: at start_hour TPE, scheduler auto-starts a watch
     # that runs until end_hour. Default OFF — operator opts in per community
     # by setting auto_watch.enabled: true in the community YAML.
@@ -125,9 +131,22 @@ def load_community_config(customer_id: str, community_id: str) -> CommunityConfi
         invite_url=str(payload["invite_url"]) if isinstance(payload.get("invite_url"), str) and payload.get("invite_url") else None,
         group_id=str(payload["group_id"]) if isinstance(payload.get("group_id"), str) and payload.get("group_id") else None,
         operator_nickname=str(payload["operator_nickname"]).strip() if isinstance(payload.get("operator_nickname"), str) and payload.get("operator_nickname") else None,
+        operator_aliases=_parse_operator_aliases(payload.get("operator_aliases")),
         **_parse_auto_watch(payload.get("auto_watch")),
     )
     return _apply_runtime_calibration(config)
+
+
+def _parse_operator_aliases(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    out: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            s = item.strip()
+            if s:
+                out.append(s)
+    return tuple(out)
 
 
 def _parse_auto_watch(value: object) -> dict[str, object]:
@@ -196,41 +215,63 @@ def _optional_int(value: object) -> int | None:
 def _apply_runtime_calibration(config: CommunityConfig) -> CommunityConfig:
     runtime = calibration_store.get(config.customer_id, config.community_id)
     if runtime is not None:
-        return CommunityConfig(
-            customer_id=config.customer_id,
-            community_id=config.community_id,
-            display_name=config.display_name,
-            persona=config.persona,
-            device_id=config.device_id,
-            patrol_interval_minutes=config.patrol_interval_minutes,
-            enabled=config.enabled,
+        return _rebuild_community_config(
+            config,
             input_x=runtime.input_x,
             input_y=runtime.input_y,
             send_x=runtime.send_x,
             send_y=runtime.send_y,
             coordinate_source=runtime.source,
-            invite_url=config.invite_url,
-            group_id=config.group_id,
-            operator_nickname=config.operator_nickname,
         )
 
     if None not in (config.input_x, config.input_y, config.send_x, config.send_y):
-        return CommunityConfig(
-            customer_id=config.customer_id,
-            community_id=config.community_id,
-            display_name=config.display_name,
-            persona=config.persona,
-            device_id=config.device_id,
-            patrol_interval_minutes=config.patrol_interval_minutes,
-            enabled=config.enabled,
+        return _rebuild_community_config(
+            config,
             input_x=config.input_x,
             input_y=config.input_y,
             send_x=config.send_x,
             send_y=config.send_y,
             coordinate_source="file",
-            invite_url=config.invite_url,
-            group_id=config.group_id,
-            operator_nickname=config.operator_nickname,
         )
 
     return config
+
+
+def _rebuild_community_config(
+    config: CommunityConfig,
+    *,
+    input_x: int | None,
+    input_y: int | None,
+    send_x: int | None,
+    send_y: int | None,
+    coordinate_source: str,
+) -> CommunityConfig:
+    """Rebuild CommunityConfig with new coordinate fields, preserving every
+    other field — especially auto_watch_*. Centralized so future field
+    additions to CommunityConfig only need to be threaded through here once,
+    not in each calibration branch."""
+
+    return CommunityConfig(
+        customer_id=config.customer_id,
+        community_id=config.community_id,
+        display_name=config.display_name,
+        persona=config.persona,
+        device_id=config.device_id,
+        patrol_interval_minutes=config.patrol_interval_minutes,
+        enabled=config.enabled,
+        input_x=input_x,
+        input_y=input_y,
+        send_x=send_x,
+        send_y=send_y,
+        coordinate_source=coordinate_source,
+        invite_url=config.invite_url,
+        group_id=config.group_id,
+        operator_nickname=config.operator_nickname,
+        operator_aliases=config.operator_aliases,
+        auto_watch_enabled=config.auto_watch_enabled,
+        auto_watch_start_hour_tpe=config.auto_watch_start_hour_tpe,
+        auto_watch_end_hour_tpe=config.auto_watch_end_hour_tpe,
+        auto_watch_duration_minutes=config.auto_watch_duration_minutes,
+        auto_watch_cooldown_seconds=config.auto_watch_cooldown_seconds,
+        auto_watch_poll_interval_seconds=config.auto_watch_poll_interval_seconds,
+    )
