@@ -30,11 +30,12 @@ This file is the lightweight engineering log for Project Echo.
 ### Tier 3 — Operations / safety
 
 - **Auto-Watch** (`app/workflows/auto_watch.py` + scheduler hook + community config field) — Per-community opt-in. At `auto_watch.start_hour_tpe` (±5 min), daemon auto-starts a watch for `duration_minutes`. At `end_hour_tpe`, auto-stops only watches it started itself (note prefix `auto_watch:`). Manual operator-started watches are never touched. Idempotent via daily marker file `data/auto_watches/<community>__<date>.txt`. Audit events: `watch_auto_started` / `watch_auto_stopped`. Default OFF for all communities — opt-in via `auto_watch.enabled: true` in YAML. **Why**: every morning 0 active watches was the day-1 silent failure mode (watcher would idle even though the operator wanted autonomy). Removes the daily manual `start_watch` ritual. HIL gate unaffected.
+- **Event health report** (`scripts/event_health_report.py` + `app/workflows/event_health_report.py`) — Read-only diagnostic for the day's two ignition events: 09:00 daily digest push (scheduler → Lark) and 10:00 first watcher cycle (watch_tick → compose → review_card_push). Surfaces marker presence, scheduler/lark log evidence, rendered preview length, and recent audit events. CLI for ops, workflow for future MCP wiring. Why: when the autonomy loop silently doesn't fire, the operator currently has to grep three logs by hand. This consolidates the morning health check.
 - **#15 State backup** (`scripts/backup_state.py` + `app/workflows/backup_state.py`) — rotating tar.gz of `.project_echo/`, `customers/*/data/`, `configs/`. Excludes `raw_xml/` (regenerable), `__pycache__`, `.DS_Store`, `cleaned_messages/`, `llm_outputs/`, `prompts/`. Excludes `.env` (credentials handled separately). Default keep=14, configurable via `--keep`. Each run writes `state_backup_created` audit event. Cron suggestion documented in CLAUDE.md §4.4. First live run: 48 files / 0.16 MiB. Rationale: harden before watcher autonomy at 10:00 — protect Tier 1+2 outputs against accidents.
 
 ### Validated (this session)
 
-- 274/274 unit tests green (was 240 at session start, +34 tests across 12 commits — backup_state +3, auto_watch +7).
+- 280/280 unit tests green (was 240 at session start, +40 tests across 13 commits — backup_state +3, auto_watch +7, event_health_report +6).
 - All 5 communities (openchat_001/002/003/004/005) have:
   - operator_nickname configured (比利 / 阿樂2 / 愛莎 / 妍 / Eric_營運)
   - chat_export imported with full sender attribution
