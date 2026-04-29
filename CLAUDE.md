@@ -258,7 +258,22 @@ auto_watch:
 
 開啟前的判斷：哪個社群你願意「整天讓 watcher 自主推草稿給你審」？建議從低敏感、規律性高的社群（003 山納百景 / 004 水月觀音）開始試 1-2 天，再擴。
 
-### 4.5 State 備份
+### 4.5 Watch tick 路徑切換
+
+Watcher Phase 2 有兩條 tick 實作，由 env `ECHO_WATCH_PATH` 切換：
+
+- **`inprocess`（預設、推薦）** — daemon 開機 eager-load BGE + Chinese-Emotion 模型（~12s），watch tick 直接 in-process 跑 select_reply_target → decide_reply → 寫 review_store + 推 Lark card。**沒有 codex spawn、沒有 MCP transport**。
+- **`codex`（legacy，故障回退用）** — 每次 tick spawn `codex exec` 子程序 + fresh MCP server。**已知問題**：MCP server 冷啟 22s 載入模型時，codex MCP client timeout 會切斷 stdio → "Transport closed"。2026-04-29 上午 4 個 watch_tick 全因此失敗。
+
+切換：
+```bash
+ECHO_WATCH_PATH=codex bash scripts/start_services.sh restart   # 退回舊路徑（debug 用）
+ECHO_SKIP_WARMUP=1 bash scripts/start_services.sh restart      # 跳過 warmup 快啟動（dev 用，watch tick 會慢）
+```
+
+HIL 鐵則不變：兩條路徑都把草稿丟進 review_store / Lark 卡，不會繞過操作員。
+
+### 4.6 State 備份
 
 ```bash
 python3 scripts/backup_state.py            # 打包到 backups/echo-state-<UTC ts>.tar.gz

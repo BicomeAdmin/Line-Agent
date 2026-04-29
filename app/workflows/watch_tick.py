@@ -45,11 +45,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 def tick_all_watches() -> dict[str, object]:
     """Called once per scheduler cycle by scheduler_daemon. Cheap when there
-    are no active watches; expensive (Codex spawn) only when we detect new
-    replies past cooldown.
+    are no active watches; expensive only when we detect new replies past
+    cooldown.
+
+    Path selection (env `ECHO_WATCH_PATH`):
+      - "inprocess" (default) — call workflows directly inside the daemon.
+        Fast, debuggable, requires daemon to have warmed up models.
+      - "codex" — legacy spawn path. Use only if you're explicitly testing
+        the codex chain or rolling back the in-process migration.
     """
 
     from app.adb.human_jitter import jittered_poll_interval
+
+    path = os.getenv("ECHO_WATCH_PATH", "inprocess").lower().strip()
+    tick = _tick_one if path == "codex" else _tick_one_dispatcher
 
     fired: list[dict[str, object]] = []
     skipped: list[dict[str, object]] = []
@@ -66,7 +75,7 @@ def tick_all_watches() -> dict[str, object]:
         if last_check and (now - last_check) < jittered_min:
             skipped.append({"watch_id": watch_id, "reason": "poll_interval"})
             continue
-        outcome = _tick_one(watch)
+        outcome = tick(watch)
         update_watch_state(
             str(watch.get("customer_id")),
             watch_id,
@@ -76,6 +85,11 @@ def tick_all_watches() -> dict[str, object]:
         )
         (fired if outcome.get("acted") else skipped).append({"watch_id": watch_id, **outcome})
     return {"fired": fired, "skipped": skipped}
+
+
+def _tick_one_dispatcher(watch: dict[str, object]) -> dict[str, object]:
+    from app.workflows.watch_tick_inproc import tick_one_inprocess
+    return tick_one_inprocess(watch)
 
 
 def _tick_one(watch: dict[str, object]) -> dict[str, object]:

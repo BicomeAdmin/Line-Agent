@@ -54,6 +54,18 @@ def main() -> int:
     ensure_job_worker()
     print(f"[scheduler] starting, interval={args.interval_seconds}s", flush=True)
 
+    # Warm up heavy AI singletons (BGE embedding + Chinese-Emotion) so the
+    # in-process watch tick path doesn't pay the cold-load tax on first use.
+    # Skip with ECHO_SKIP_WARMUP=1 (e.g. for fast restarts during dev).
+    if not os.getenv("ECHO_SKIP_WARMUP"):
+        try:
+            from app.workflows.model_warmup import warm_up_models
+            warm_t = time.time()
+            stats = warm_up_models()
+            print(f"[scheduler] models warmed in {time.time() - warm_t:.1f}s: {stats}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[scheduler] model warmup error={exc!r}", flush=True, file=sys.stderr)
+
     cycles = 0
     while not _stopping:
         cycles += 1
@@ -130,6 +142,7 @@ def _maybe_push_dashboard_notifications() -> None:
 
     # 1. Daily digest.
     if should_send_daily_digest(customer_id, target_hour_taipei=target_hour):
+        from app.core.audit import append_audit_event
         try:
             data = collect_dashboard_data(customer_id)
             text = "🌅 今日 Project Echo 摘要\n\n" + format_text_report(data, compact=True)
@@ -137,8 +150,18 @@ def _maybe_push_dashboard_notifications() -> None:
             client.send_message(chat_id, "text", {"text": text}, receive_id_type="chat_id")
             mark_daily_digest_sent(customer_id)
             print(f"[scheduler] daily_digest pushed to {chat_id[:12]}…", flush=True)
+            append_audit_event(customer_id, "daily_digest_sent", {
+                "chat_id_prefix": chat_id[:12],
+                "target_hour_taipei": target_hour,
+                "char_count": len(text),
+            })
         except LarkClientError as exc:
             print(f"[scheduler] daily_digest lark error={exc}", flush=True, file=sys.stderr)
+            append_audit_event(customer_id, "daily_digest_failed", {
+                "chat_id_prefix": chat_id[:12],
+                "target_hour_taipei": target_hour,
+                "error": str(exc)[:200],
+            })
 
     # 2. Aging review alerts (one ping per review_id, ever).
     threshold_hours = aging_review_alert_threshold_hours()
@@ -149,8 +172,10 @@ def _maybe_push_dashboard_notifications() -> None:
         and should_alert_aging_review(customer_id, p["review_id"])
     ]
     if aged:
+        from app.core.audit import append_audit_event
         try:
             client = LarkClient()
+            sent_ids: list[str] = []
             for p in aged:
                 msg = (
                     f"⚠️ 待審 review 積壓提醒\n\n"
@@ -163,9 +188,19 @@ def _maybe_push_dashboard_notifications() -> None:
                 )
                 client.send_message(chat_id, "text", {"text": msg}, receive_id_type="chat_id")
                 mark_aging_alert_sent(customer_id, p["review_id"])
+                sent_ids.append(str(p["review_id"]))
             print(f"[scheduler] aging_alerts pushed: {len(aged)}", flush=True)
+            append_audit_event(customer_id, "aging_review_alerts_sent", {
+                "count": len(sent_ids),
+                "review_ids": sent_ids,
+                "threshold_hours": threshold_hours,
+            })
         except LarkClientError as exc:
             print(f"[scheduler] aging_alert lark error={exc}", flush=True, file=sys.stderr)
+            append_audit_event(customer_id, "aging_review_alerts_failed", {
+                "attempted": len(aged),
+                "error": str(exc)[:200],
+            })
 
 
 def _maybe_run_auto_watch() -> None:
