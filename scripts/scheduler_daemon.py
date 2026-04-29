@@ -54,6 +54,19 @@ def main() -> int:
     ensure_job_worker()
     print(f"[scheduler] starting, interval={args.interval_seconds}s", flush=True)
 
+    # Catch a common misconfiguration: ECHO_LLM_ENABLED=true but no API key.
+    # is_enabled() silently returns False in that case, so every draft falls
+    # back to the rule-based template without any signal to the operator.
+    from app.config import settings as _echo_settings
+    if _echo_settings.llm_enabled and not _echo_settings.anthropic_api_key:
+        print(
+            "[scheduler] WARNING: ECHO_LLM_ENABLED=true but ANTHROPIC_API_KEY is unset; "
+            "drafts will silently fall back to rule-based templates. "
+            "Set the key or unset the flag to silence this warning.",
+            flush=True,
+            file=sys.stderr,
+        )
+
     # Warm up heavy AI singletons (BGE embedding + Chinese-Emotion) so the
     # in-process watch tick path doesn't pay the cold-load tax on first use.
     # Skip with ECHO_SKIP_WARMUP=1 (e.g. for fast restarts during dev).

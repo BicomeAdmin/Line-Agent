@@ -66,10 +66,10 @@ class _OffHoursStub:
 
 
 class WatchTickGateTests(unittest.TestCase):
-    """Verify _tick_one short-circuits outside activity hours."""
+    """Verify the in-process tick short-circuits outside activity hours."""
 
     def test_skips_outside_window(self):
-        from app.workflows import watch_tick
+        from app.workflows import watch_tick_inproc
         from app.core import risk_control
 
         watch = {
@@ -81,7 +81,7 @@ class WatchTickGateTests(unittest.TestCase):
             "last_seen_signature": "",
         }
         with patch.object(risk_control, "default_risk_control", _OffHoursStub()):
-            result = watch_tick._tick_one(watch)
+            result = watch_tick_inproc.tick_one_inprocess(watch)
         self.assertFalse(result["acted"])
         self.assertEqual(result["reason"], "outside_activity_hours")
         self.assertIn("activity_window", result)
