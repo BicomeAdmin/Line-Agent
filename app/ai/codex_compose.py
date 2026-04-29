@@ -1,0 +1,304 @@
+"""Composer backed by Codex (ChatGPT Pro subscription) — the production
+LLM compose path for autonomous watch ticks.
+
+Why Codex (not Anthropic API):
+  CLAUDE.md §8 — subscription-backed, 0 token cost. The Anthropic API
+  path (`app.ai.llm_client`) is kept dormant for budget reasons; the
+  AUP classifier on `claude -p` also flags the LINE-automation tool
+  surface (see CLAUDE.md §8 for the full story). Codex has no
+  equivalent client-side classifier on user MCP, so HIL-gated drafts
+  flow end-to-end.
+
+Inputs (rich, not just raw messages):
+  - VoiceProfile (parsed frontmatter + sections — nickname, value
+    proposition, route_mix, stage, off_limits, etc.)
+  - TargetCandidate from reply_target_selector (who to reply to,
+    why, with what score)
+  - MemberFingerprint of that target (length / emoji / particles)
+  - Recent thread excerpt (last N messages)
+  - Operator's recent self-posts (so we mirror their voice, not
+    invent a new one)
+
+Output: ComposerOutput with should_engage / draft / rationale /
+confidence / off_limits_hit. Caller stages this as a ReviewRecord —
+HIL gate unchanged.
+
+Failure modes (all → ComposerUnavailable, caller should skip):
+  - codex CLI not installed / not logged in
+  - codex run timed out
+  - JSON parse failure (LLM ignored output schema)
+  - voice_profile incomplete (refuse rather than draft from empty
+    placeholders — surfaces the missing slot to the operator)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Sequence
+
+from app.ai.voice_profile_v2 import VoiceProfile
+
+
+PROMPT_TEMPLATE_PATH = Path(__file__).parent / "prompts" / "composer_v1.md"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+class ComposerUnavailable(RuntimeError):
+    """Raised when Codex compose cannot produce a draft. Caller should skip."""
+
+
+@dataclass(frozen=True)
+class ComposerOutput:
+    should_engage: bool
+    rationale: str
+    draft: str
+    confidence: float
+    off_limits_hit: str | None
+    raw_text: str  # full codex stdout for audit
+
+
+def is_enabled() -> bool:
+    """Composer is on only when env switch + per-community gate align.
+
+    Per-community gate is checked by the caller (it has the
+    CommunityConfig). This function only checks the global env.
+    """
+
+    return os.getenv("ECHO_COMPOSE_BACKEND", "rule").strip().lower() == "codex"
+
+
+def compose_via_codex(
+    *,
+    voice_profile: VoiceProfile,
+    community_name: str,
+    target_sender: str,
+    target_message: str,
+    target_score: float,
+    target_threshold: float,
+    target_reasons: Sequence[str],
+    target_fingerprint: dict | None,
+    thread_excerpt: Sequence[dict],
+    recent_self_posts: Sequence[str],
+    timeout_seconds: int = 90,
+) -> ComposerOutput:
+    """Compose a draft via codex exec, return structured output.
+
+    Refuses (raises ComposerUnavailable) if voice_profile.is_complete
+    is False — this is the §0.5.6 gate. Operator must populate the
+    profile before LLM drafts go live.
+    """
+
+    if not voice_profile.is_complete:
+        raise ComposerUnavailable(
+            f"voice_profile_incomplete:{','.join(voice_profile.missing_fields)}"
+        )
+
+    prompt = _build_prompt(
+        voice_profile=voice_profile,
+        community_name=community_name,
+        target_sender=target_sender,
+        target_message=target_message,
+        target_score=target_score,
+        target_threshold=target_threshold,
+        target_reasons=target_reasons,
+        target_fingerprint=target_fingerprint or {},
+        thread_excerpt=thread_excerpt,
+        recent_self_posts=recent_self_posts,
+    )
+
+    raw_text = _run_codex(prompt, timeout_seconds=timeout_seconds)
+    return _parse_output(raw_text)
+
+
+def _build_prompt(
+    *,
+    voice_profile: VoiceProfile,
+    community_name: str,
+    target_sender: str,
+    target_message: str,
+    target_score: float,
+    target_threshold: float,
+    target_reasons: Sequence[str],
+    target_fingerprint: dict,
+    thread_excerpt: Sequence[dict],
+    recent_self_posts: Sequence[str],
+) -> str:
+    template = PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    # Format thread excerpt: "[sender] text"
+    thread_lines = []
+    for msg in thread_excerpt:
+        sender = str(msg.get("sender") or "?").strip()
+        text = str(msg.get("text") or "").strip()
+        if not text:
+            continue
+        thread_lines.append(f"  - [{sender}] {text}")
+    thread_text = "\n".join(thread_lines) or "  - （無訊息）"
+
+    self_posts_text = "\n".join(f"  - {s.strip()}" for s in recent_self_posts if s.strip()) or "  - （未匯入操作員歷史發言）"
+
+    # Fingerprint detail
+    avg_len = target_fingerprint.get("avg_length") if target_fingerprint else None
+    emoji_rate = target_fingerprint.get("emoji_rate") if target_fingerprint else None
+    tail_particles = target_fingerprint.get("top_ending_particles") if target_fingerprint else None
+    target_recent = target_fingerprint.get("recent_lines") if target_fingerprint else None
+    target_recent_text = "\n".join(f"    - {s}" for s in (target_recent or [])[:5]) or "    - （無歷史語料）"
+
+    reasons_text = ", ".join(target_reasons) or "（無）"
+
+    # Use simple replace (not str.format) — the template has JSON braces
+    # that .format() misinterprets even with {{ }} escaping if any new
+    # placeholders are added later. Replace is safer for prompt files.
+    replacements = {
+        "{operator_nickname}": voice_profile.nickname or "（未設定）",
+        "{community_name}": community_name,
+        "{value_proposition}": voice_profile.value_proposition or "（未設定）",
+        "{route_ip}": f"{voice_profile.route_mix.ip:.0%}",
+        "{route_interest}": f"{voice_profile.route_mix.interest:.0%}",
+        "{route_info}": f"{voice_profile.route_mix.info:.0%}",
+        "{route_dominant}": voice_profile.route_mix.dominant(),
+        "{stage}": voice_profile.stage or "（未設定）",
+        "{stage_objective}": voice_profile.stage_objective,
+        "{engagement_appetite}": voice_profile.engagement_appetite,
+        "{personality}": voice_profile.personality or "（未設定）",
+        "{style_anchors}": voice_profile.style_anchors or "（未設定）",
+        "{recent_self_posts}": self_posts_text,
+        "{off_limits}": voice_profile.off_limits or "（未設定，預設不接任何具爭議話題）",
+        "{thread_size}": str(len(thread_excerpt)),
+        "{thread_excerpt}": thread_text,
+        "{target_sender}": target_sender or "（未知）",
+        "{target_message}": target_message or "（空訊息）",
+        "{target_score}": f"{target_score:.2f}",
+        "{target_threshold}": f"{target_threshold:.2f}",
+        "{target_reasons}": reasons_text,
+        "{target_avg_length}": f"{avg_len:.1f}" if isinstance(avg_len, (int, float)) else "（無）",
+        "{target_emoji_rate}": f"{emoji_rate:.2%}" if isinstance(emoji_rate, (int, float)) else "（無）",
+        "{target_tail_particles}": ", ".join(tail_particles) if isinstance(tail_particles, list) and tail_particles else "（無）",
+        "{target_recent_lines}": target_recent_text,
+    }
+    out = template
+    for k, v in replacements.items():
+        out = out.replace(k, v)
+    return out
+
+
+def _run_codex(prompt: str, *, timeout_seconds: int) -> str:
+    """Spawn `codex exec` headless, return last assistant message.
+
+    Mirrors the bridge's _run_codex helper (start_lark_long_connection.py)
+    — kept as a separate function so prompt-engineering changes don't
+    couple to the bridge's input shape (the bridge sends conversational
+    user text; this sends a fully-rendered template).
+    """
+
+    with tempfile.NamedTemporaryFile(mode="w+", suffix=".txt", delete=False, encoding="utf-8") as fh:
+        last_msg_path = fh.name
+
+    cmd = [
+        "codex", "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check",
+        "--cd", str(PROJECT_ROOT),
+        "--output-last-message", last_msg_path,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ComposerUnavailable(f"codex timeout after {timeout_seconds}s") from exc
+    except FileNotFoundError as exc:
+        raise ComposerUnavailable("codex CLI not found on PATH") from exc
+
+    if proc.returncode != 0:
+        raise ComposerUnavailable(
+            f"codex exit {proc.returncode}: {(proc.stderr or '')[:300]}"
+        )
+
+    try:
+        last_msg = Path(last_msg_path).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ComposerUnavailable(f"codex output read failed: {exc}") from exc
+    finally:
+        try:
+            os.unlink(last_msg_path)
+        except OSError:
+            pass
+
+    if not last_msg:
+        raise ComposerUnavailable("codex returned empty last_message")
+    return last_msg
+
+
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _parse_output(raw_text: str) -> ComposerOutput:
+    payload = _extract_json(raw_text)
+
+    should_engage_raw = payload.get("should_engage")
+    if isinstance(should_engage_raw, bool):
+        should_engage = should_engage_raw
+    elif isinstance(should_engage_raw, str):
+        should_engage = should_engage_raw.strip().lower() in {"true", "yes", "1"}
+    else:
+        raise ComposerUnavailable(f"invalid should_engage: {should_engage_raw!r}")
+
+    confidence_raw = payload.get("confidence", 0.5)
+    try:
+        confidence = float(confidence_raw)
+    except (TypeError, ValueError):
+        confidence = 0.5
+    confidence = max(0.0, min(1.0, confidence))
+
+    off_limits_hit = payload.get("off_limits_hit")
+    if isinstance(off_limits_hit, str):
+        off_limits_hit = off_limits_hit.strip() or None
+    elif off_limits_hit is not None:
+        off_limits_hit = None
+
+    draft = str(payload.get("draft") or "").strip()
+    rationale = str(payload.get("rationale") or "").strip()
+
+    if should_engage and not draft:
+        raise ComposerUnavailable("should_engage=true but draft is empty")
+
+    return ComposerOutput(
+        should_engage=should_engage,
+        rationale=rationale or "（未說明）",
+        draft=draft,
+        confidence=confidence,
+        off_limits_hit=off_limits_hit,
+        raw_text=raw_text,
+    )
+
+
+def _extract_json(raw_text: str) -> dict:
+    text = raw_text.strip()
+    fenced = _JSON_FENCE_RE.search(text)
+    if fenced:
+        candidate = fenced.group(1)
+    else:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise ComposerUnavailable("composer response has no JSON object")
+        candidate = text[start : end + 1]
+    try:
+        loaded = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        raise ComposerUnavailable(f"composer JSON parse failed: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ComposerUnavailable("composer JSON is not an object")
+    return loaded

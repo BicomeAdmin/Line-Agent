@@ -42,11 +42,31 @@ class ReviewStore:
         self._persist_enabled = persist
         self._lock = threading.Lock()
         self._reviews: dict[str, ReviewRecord] = {}
+        # Track the last-loaded mtime so we can detect cross-process writes
+        # (bridge / scheduler_daemon / MCP each have their own singleton).
+        # Without this, an ignore from bridge wouldn't be visible to MCP and
+        # codex's approve_review would silently send the stale draft.
+        self._loaded_mtime: float = 0.0
         if self._persist_enabled:
+            self._load()
+
+    def _refresh_if_stale(self) -> None:
+        """Re-read state from disk if another process has appended since
+        we last loaded. Cheap mtime check; full reload only on change."""
+
+        if not self._persist_enabled or not self._state_path.exists():
+            return
+        try:
+            mtime = self._state_path.stat().st_mtime
+        except OSError:
+            return
+        if mtime > self._loaded_mtime:
+            self._reviews = {}
             self._load()
 
     def upsert(self, record: ReviewRecord) -> ReviewRecord:
         with self._lock:
+            self._refresh_if_stale()
             existing = self._reviews.get(record.review_id)
             if existing is not None:
                 record.created_at = existing.created_at
@@ -57,14 +77,17 @@ class ReviewStore:
 
     def get(self, review_id: str) -> ReviewRecord | None:
         with self._lock:
+            self._refresh_if_stale()
             return self._reviews.get(review_id)
 
     def list_all(self) -> list[ReviewRecord]:
         with self._lock:
+            self._refresh_if_stale()
             return sorted(self._reviews.values(), key=lambda item: item.updated_at, reverse=True)
 
     def list_pending(self) -> list[ReviewRecord]:
         with self._lock:
+            self._refresh_if_stale()
             return [
                 item
                 for item in sorted(self._reviews.values(), key=lambda review: review.updated_at, reverse=True)
@@ -79,6 +102,7 @@ class ReviewStore:
         draft_text: str | None = None,
     ) -> ReviewRecord | None:
         with self._lock:
+            self._refresh_if_stale()
             review = self._reviews.get(review_id)
             if review is None:
                 return None
@@ -86,6 +110,28 @@ class ReviewStore:
             review.updated_from_action = updated_from_action
             if draft_text is not None:
                 review.draft_text = draft_text
+            review.updated_at = time.time()
+            self._persist(review)
+            return review
+
+    def update_draft_text(
+        self,
+        review_id: str,
+        new_draft_text: str,
+        updated_from_action: str = "operator_revision",
+    ) -> ReviewRecord | None:
+        """Replace the draft_text of an existing review without changing
+        status. Used after meta-feedback discussion produces a new agreed
+        version of the draft — codex calls this before approve_review so
+        the SENT text matches the DISCUSSED text, not the original."""
+
+        with self._lock:
+            self._refresh_if_stale()
+            review = self._reviews.get(review_id)
+            if review is None:
+                return None
+            review.draft_text = new_draft_text
+            review.updated_from_action = updated_from_action
             review.updated_at = time.time()
             self._persist(review)
             return review
@@ -123,6 +169,10 @@ class ReviewStore:
             )
             latest[record.review_id] = record
         self._reviews = latest
+        try:
+            self._loaded_mtime = self._state_path.stat().st_mtime
+        except OSError:
+            self._loaded_mtime = 0.0
 
 
 def normalize_review_status(status: str) -> str:

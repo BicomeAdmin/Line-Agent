@@ -34,6 +34,13 @@ class _FakeRiskControl:
 
 
 class WatchTickInprocTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Module-level review_store persists across tests; clear it so the
+        # auto_watch dedup helper doesn't see leftovers from previous tests.
+        from app.core.reviews import review_store
+        with review_store._lock:
+            review_store._reviews.clear()
+
     def test_outside_activity_window_returns_skip(self) -> None:
         with patch("app.core.risk_control.default_risk_control", _FakeRiskControl(in_window=False)):
             r = wti.tick_one_inprocess(_stub_watch())
@@ -81,7 +88,11 @@ class WatchTickInprocTests(unittest.TestCase):
             "target": {"actionable": True, "score": 5.0, "sender": "alice", "text": "?", "index": 0},
             "skip_reason": None,
         }
-        community = MagicMock(device_id="emulator-5554", display_name="X")
+        # llm_compose_enabled=False keeps the test on the rule-based path —
+        # MagicMock auto-attributes return truthy Mock objects which would
+        # otherwise route into the codex branch and break the rule-based
+        # path test.
+        community = MagicMock(device_id="emulator-5554", display_name="X", llm_compose_enabled=False)
         customer = MagicMock(display_name="C")
         from app.ai.decision import DraftDecision
         rule_decision = DraftDecision(action="draft_reply", reason="user_question", confidence=0.84, draft="OK 我來回")

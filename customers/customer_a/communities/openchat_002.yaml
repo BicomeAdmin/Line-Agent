@@ -16,3 +16,5 @@ operator_nickname: "阿樂2"
 # historical messages (root cause of 2026-04-29 11:04 mis-fire).
 operator_aliases:
   - "阿樂 本尊"
+# Codex composer enabled 2026-04-29 (internal test group, low risk).
+llm_compose_enabled: true

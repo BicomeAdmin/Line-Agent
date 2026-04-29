@@ -121,19 +121,147 @@ def tick_one_inprocess(watch: dict[str, object]) -> dict[str, object]:
             "selector_top_score": (target or {}).get("score"),
         }
 
-    # Compose a draft via the rule-based decision module (LLM-aware: when
-    # ECHO_LLM_ENABLED=true, decide_reply auto-routes through LLM).
-    from app.ai.decision import decide_reply
-    persona_text = (persona.get("voice_profile") or {}).get("personality_zh") or ""
-    draft = decide_reply(
-        messages=messages,
-        persona_text=persona_text,
-        community_name=community.display_name,
-    )
-    if draft.action != "draft_reply" or not draft.draft.strip():
+    # Compose a draft. Two backends:
+    #   1. LLM (codex) — only when env ECHO_COMPOSE_BACKEND=codex AND
+    #      community.llm_compose_enabled=true AND voice_profile is
+    #      complete (frontmatter VCPVC + nickname + personality + off_limits).
+    #      Otherwise falls through to rule-based.
+    #   2. Rule-based — `app.ai.decision.decide_reply` (LLM-aware via
+    #      Anthropic API path, kept dormant). Default.
+    composer_source = "rule"
+    composer_rationale = ""
+    composer_off_limits_hit: str | None = None
+    composer_lint: dict | None = None
+
+    use_codex = False
+    try:
+        from app.ai.codex_compose import is_enabled as codex_enabled
+        if codex_enabled() and getattr(community, "llm_compose_enabled", False):
+            use_codex = True
+    except Exception:  # noqa: BLE001 — never let composer-availability check kill the tick
+        use_codex = False
+
+    if use_codex:
+        from app.ai.codex_compose import compose_via_codex, ComposerUnavailable
+        from app.ai.voice_profile_v2 import parse_voice_profile
+        from app.storage.paths import voice_profile_path
+
+        vp = parse_voice_profile(customer_id, community_id, voice_profile_path(customer_id, community_id))
+        target_fp_dict = None
+        try:
+            from app.workflows.member_fingerprint import get_member_fingerprint
+            target_fp_dict = get_member_fingerprint(customer_id, community_id, str(target.get("sender") or ""))
+        except Exception:  # noqa: BLE001 — fingerprint missing is OK, prompt has fallback
+            target_fp_dict = None
+
+        recent_self_posts = [
+            str(p.get("text") or "")
+            for p in (persona.get("recent_self_posts") or [])
+            if isinstance(p, dict)
+        ]
+
+        try:
+            output = compose_via_codex(
+                voice_profile=vp,
+                community_name=community.display_name,
+                target_sender=str(target.get("sender") or ""),
+                target_message=str(target.get("text") or ""),
+                target_score=float(target.get("score") or 0.0),
+                target_threshold=float(decision_dict.get("threshold") or 2.0),
+                target_reasons=list(target.get("reasons") or []),
+                target_fingerprint=target_fp_dict,
+                thread_excerpt=messages[-8:],
+                recent_self_posts=recent_self_posts,
+            )
+        except ComposerUnavailable as exc:
+            append_audit_event(
+                customer_id,
+                "composer_codex_unavailable",
+                {"community_id": community_id, "reason": str(exc)[:200]},
+            )
+            return {
+                "acted": False,
+                "reason": f"composer_unavailable:{str(exc)[:120]}",
+                "new_signature": new_sig,
+                "selector_top_score": target.get("score"),
+            }
+
+        composer_source = "codex"
+        composer_rationale = output.rationale
+        composer_off_limits_hit = output.off_limits_hit
+
+        if not output.should_engage:
+            append_audit_event(
+                customer_id,
+                "composer_codex_skipped",
+                {
+                    "community_id": community_id,
+                    "rationale": output.rationale[:200],
+                    "off_limits_hit": output.off_limits_hit,
+                    "selector_target_sender": target.get("sender"),
+                    "selector_score": target.get("score"),
+                },
+            )
+            return {
+                "acted": False,
+                "reason": f"composer_skipped:llm_should_engage_false",
+                "rationale": output.rationale,
+                "new_signature": new_sig,
+                "selector_top_score": target.get("score"),
+            }
+
+        # (lint gate runs uniformly below for both codex + rule-based)
+
+        # Synthesize a DraftDecision-shaped object so downstream code is unchanged.
+        from app.ai.decision import DraftDecision
+        draft = DraftDecision(
+            action="draft_reply",
+            reason="codex_compose",
+            confidence=output.confidence,
+            draft=output.draft,
+            source="codex",
+        )
+    else:
+        from app.ai.decision import decide_reply
+        persona_text = (persona.get("voice_profile") or {}).get("personality_zh") or ""
+        draft = decide_reply(
+            messages=messages,
+            persona_text=persona_text,
+            community_name=community.display_name,
+        )
+        if draft.action != "draft_reply" or not draft.draft.strip():
+            return {
+                "acted": False,
+                "reason": f"composer_skipped:{draft.reason}",
+                "new_signature": new_sig,
+                "selector_top_score": target.get("score"),
+            }
+
+    # Universal lint gate — applies to BOTH codex and rule-based drafts.
+    # Rule-based templates are known-stiff (advisor SOP register), so this
+    # effectively pushes operators toward codex. The codex branch already
+    # ran a lint above; we re-run here so that composer_lint is set on
+    # both paths and the audit trail is uniform.
+    from app.ai.draft_linter import score_draft as _lint
+    final_lint = _lint(draft.draft)
+    composer_lint = final_lint.to_dict()
+    if final_lint.score < 60:
+        append_audit_event(
+            customer_id,
+            "composer_lint_rejected",
+            {
+                "community_id": community_id,
+                "score": final_lint.score,
+                "verdict": final_lint.verdict,
+                "issues": list(final_lint.issues),
+                "draft_preview": (draft.draft or "")[:80],
+                "composer_source": draft.source,
+            },
+        )
         return {
             "acted": False,
-            "reason": f"composer_skipped:{draft.reason}",
+            "reason": f"composer_skipped:lint_low_score({final_lint.score}/{final_lint.verdict})",
+            "lint": composer_lint,
             "new_signature": new_sig,
             "selector_top_score": target.get("score"),
         }
@@ -166,6 +294,10 @@ def tick_one_inprocess(watch: dict[str, object]) -> dict[str, object]:
             "selector_score": target.get("score"),
             "selector_target_sender": target.get("sender"),
             "composer_source": draft.source,
+            "composer_rationale": composer_rationale[:200] if composer_rationale else None,
+            "composer_off_limits_hit": composer_off_limits_hit,
+            "composer_lint_score": (composer_lint or {}).get("score"),
+            "composer_lint_verdict": (composer_lint or {}).get("verdict"),
         },
     )
 
@@ -174,6 +306,16 @@ def tick_one_inprocess(watch: dict[str, object]) -> dict[str, object]:
     if isinstance(initiator_chat_id, str) and initiator_chat_id:
         try:
             from app.lark.cards import build_review_card
+            card_reason = (
+                f"codex: {composer_rationale}"[:200]
+                if composer_source == "codex" and composer_rationale
+                else "auto_watch_inproc"
+            )
+            card_title = (
+                "🤖 LLM 擬稿（codex）— 待審核"
+                if composer_source == "codex"
+                else "🛎 自動追蹤（in-process）— 待審核"
+            )
             card = build_review_card(
                 customer_name=customer.display_name,
                 community_name=community.display_name,
@@ -182,9 +324,9 @@ def tick_one_inprocess(watch: dict[str, object]) -> dict[str, object]:
                 customer_id=customer_id,
                 community_id=community_id,
                 device_id=community.device_id,
-                reason="auto_watch_inproc",
+                reason=card_reason,
                 confidence=draft.confidence,
-                draft_title="🛎 自動追蹤（in-process）— 待審核",
+                draft_title=card_title,
             )
             client = LarkClient()
             client.send_card(initiator_chat_id, card, receive_id_type="chat_id")

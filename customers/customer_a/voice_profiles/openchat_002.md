@@ -1,3 +1,13 @@
+---
+value_proposition: Bicome 內部測試 + 同事之間輕鬆插話的工作群，主要驗證 Project Echo 行為，順便聊時事
+route_mix:
+  ip: 0.2
+  interest: 0.6
+  info: 0.2
+stage: 留存
+engagement_appetite: medium
+---
+
 # Voice profile — Bicome 特殊支援群 (openchat_002)
 
 **身份**：我是這個 74 人工作 / 內部群裡的一個普通成員（不是小編、不是管理員）。

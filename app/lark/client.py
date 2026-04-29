@@ -69,6 +69,14 @@ class LarkClient:
         # Wrapping it in `{"card": card}` triggers `200621 parse card json err`.
         return self.send_message(receive_id, "interactive", card, receive_id_type=receive_id_type)
 
+    def add_reaction(self, message_id: str, emoji_type: str = "THUMBSUP") -> dict[str, object]:
+        token = self.tenant_access_token().token
+        return self._post_json(
+            f"/im/v1/messages/{parse.quote(message_id, safe='')}/reactions",
+            {"reaction_type": {"emoji_type": emoji_type}},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
     def _post_json(self, path: str, payload: dict[str, object], headers: dict[str, str] | None = None) -> dict[str, object]:
         data = json.dumps(payload).encode("utf-8")
         request_headers = {"Content-Type": "application/json; charset=utf-8", **(headers or {})}

@@ -69,6 +69,12 @@ class CommunityConfig:
     # in the community YAML.
     activity_start_hour_tpe: int | None = None
     activity_end_hour_tpe: int | None = None
+    # Per-community LLM composer opt-in. When true AND env
+    # ECHO_COMPOSE_BACKEND=codex, the watcher routes draft composition
+    # through `app.ai.codex_compose` (Codex / ChatGPT Pro subscription)
+    # instead of the rule-based templates. Default OFF — flip to true
+    # only after dry-run review of a populated voice_profile.md.
+    llm_compose_enabled: bool = False
 
 
 def load_devices_config() -> list[DeviceConfig]:
@@ -138,6 +144,7 @@ def load_community_config(customer_id: str, community_id: str) -> CommunityConfi
         group_id=str(payload["group_id"]) if isinstance(payload.get("group_id"), str) and payload.get("group_id") else None,
         operator_nickname=str(payload["operator_nickname"]).strip() if isinstance(payload.get("operator_nickname"), str) and payload.get("operator_nickname") else None,
         operator_aliases=_parse_operator_aliases(payload.get("operator_aliases")),
+        llm_compose_enabled=bool(payload.get("llm_compose_enabled", False)),
         **_parse_auto_watch(payload.get("auto_watch")),
         **_parse_activity_window(payload.get("activity_window")),
     )
@@ -303,4 +310,5 @@ def _rebuild_community_config(
         auto_watch_poll_interval_seconds=config.auto_watch_poll_interval_seconds,
         activity_start_hour_tpe=config.activity_start_hour_tpe,
         activity_end_hour_tpe=config.activity_end_hour_tpe,
+        llm_compose_enabled=config.llm_compose_enabled,
     )

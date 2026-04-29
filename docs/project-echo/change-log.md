@@ -6,6 +6,126 @@ This file is the lightweight engineering log for Project Echo.
 
 ## 2026-04-29
 
+### Lark UX + 散文腔修補（看到第一張卡片後的迭代）
+
+**操作員真實使用反饋（截圖證據）**：
+1. 點「修改稿件」後打「**原來是這樣，學習到了 / 口語你在優化一下**」——這是給我（AI）的指示，但被當成新草稿入 review_store
+2. 「立即發送 / 忽略」按鈕點下去 Lark 卡片不會變狀態，**不知道有沒有點到**
+
+**What changed**
+- `scripts/start_lark_long_connection.py` `_handle_pending_edit_submission` — 加 META_FEEDBACK_HINTS 黑名單（你在 / 你幫 / 你改 / 口語化 / 太書面 / 太正式 / 重寫 / 風格不對 等 20+ 條）。命中就自動：(a) pop 修改模式 (b) 把原 review 標 ignored (c) 推「偵測到 AI 反饋」ack 卡 (d) 把這段反饋 re-route 到 codex 對話讓 AI 吸收回應。
+- `scripts/start_lark_long_connection.py` `_push_edit_instruction_card` — 修改模式進場文案大改：明確標「請打妳要送 LINE 群裡的版本」+ 警告「這裡不是跟 AI 對話的地方」+ 教操作員怎麼改用一般訊息給 AI 反饋。
+- `scripts/start_lark_long_connection.py` `_push_click_ack` (NEW) — send / ignore 按鈕點擊後立即推 ack 卡（「✅ 處理中：立即發送」/「🟡 已忽略」），讓操作員知道點到了。
+- `app/ai/prompts/composer_v1.md` 步驟 2 加「太書面 / 太散文」反例段——5 條具體禁忌句式 + ✓ 替換版本：「比較像先讓 X 知道可以慢慢 Y 了」、「不是 X，比較像 Y」、「先把 X 列出來，通常就能排掉一半」、「我會先抓住 X，再往下縮小範圍」、「不一定要追求 X 的感覺」。加口語化檢查清單。
+
+**為什麼 lint 100 還是不夠**
+妍看到的草稿「我自己睡前坐也是這樣喔，感覺不是把心壓安靜。比較像先讓身體知道可以慢慢鬆下來了。」lint 100/natural（hedger 2 個 + 語助詞 2 個 + 第一人稱開頭），但她直覺覺得「太像 AI」——原因是兩段對比反思 + 抽象比喻（「讓身體知道可以鬆下來」）= 散文腔。Lint 抓不到語感層級的書面感，必須 prompt 端教 codex 不要寫對比 / 反思 / 教學步驟句。
+
+**Validated**
+- 441/441 tests passed（順手修了一個 pre-existing test bug：MagicMock 沒設 `llm_compose_enabled=False` 會誤入 codex branch）
+- bridge restarted；下次妍點修改寫「口語化一點」會被偵測 + 自動轉路徑
+
+### Production rollout：codex composer 開到 4 個社群（HIL 不變）
+
+**Why** — 操作員（妍）累，沒時間每個社群手動 onboard。決定「直接幫她搞定」。但 001 愛美星 fan 圈品牌敏感（CLAUDE.md §7 自訂紅線），跳過。
+
+**What changed**
+- `.env` — 加 `ECHO_COMPOSE_BACKEND=codex`（全域開關）
+- `customers/customer_a/communities/openchat_002.yaml` — `llm_compose_enabled: true`
+- `customers/customer_a/communities/openchat_003.yaml` — `llm_compose_enabled: true`
+- `customers/customer_a/communities/openchat_004.yaml` — `llm_compose_enabled: true`
+- `customers/customer_a/communities/openchat_005.yaml` — `llm_compose_enabled: true`
+- `customers/customer_a/communities/openchat_001.yaml` — **故意不動**（CLAUDE.md §7 紅線：fan 圈上線前必須客製 persona + 操作員親簽）
+- `customers/customer_a/voice_profiles/openchat_002.md` — 加 frontmatter（內部測試群）
+- `customers/customer_a/voice_profiles/openchat_003.md` — 升級成完整版（愛莎=普通成員、不主導，山寶/Bala 才是主持）
+- `customers/customer_a/voice_profiles/openchat_005.md` — 升級成完整版（Eric_營運=補位、不搶 Paul/Jocelyn 主持位）
+
+**Validated（2026-04-29 dry-run 全綠）**
+- **openchat_002 (阿樂2)**：selector 命中威廉 iOS 跳轉訊息，codex 出「我感覺是 iOS deep link 吧」→ lint 🌿 100
+- **openchat_003 (愛莎)**：selector 命中山寶 mentions @愛莎 任務統計，codex 出「謝謝山寶提醒欸 我可能先去領幣哈／表單我自己還在慢慢看喔」→ lint 🌿 100
+- **openchat_004 (妍)**：selector 命中 Kevin 靜坐問題，codex 出「我自己會看起身後有沒有比較清明喔，不一定要追求很特別的感覺啊」→ lint 🌿 100
+- **openchat_005 (Eric_營運)**：selector 沒挑到目標（top 1.62 < threshold 2.0，都是 Jocelyn broadcast）→ 正確 skip，不擬稿
+
+**HIL 不變**：四個社群都仍走 review_store → Lark 卡片 → 操作員按通過。`require_human_approval: true` 動都沒動。Lint pre-review gate（< 60 = skip）多一道機械防線。
+
+**待操作員確認的 caveat**
+- 003 愛莎 — voice_profile 是我從 chat export 推敲的，不確定愛莎是不是新 identity（top sender 是山寶；愛莎不在 top 5）。建議妳實際看到第一張卡片時驗收：對話人設是否符合預期。
+- 005 Eric_營運 — 同上，Eric 在 export 沒出現（只 Jocelyn / Paul / 來賓），voice_profile 是按「補位、不搶 Paul 戲份」邏輯寫的。
+
+如果 caveat 任何一個發現有誤，改 voice_profile.md → 下次 watch tick 自動拿新內容（無需重啟）。
+
+### AI 自我人設 + 真人化 draft linter（pre-review gate）
+
+**Why** — 操作員兩個訴求：(1)「真的要好好知道你的人設」(2)「模仿真人回應」。前者要把分散在 §0-prelude / §0.5 / chat register 的 AI posture 凝縮成 self-statement，新 session 一進來自己 onboard；後者需要一個自動化檢查器，讓即使 codex 走鐘的草稿也不會 ship，避免讓使用者的群成員看到 bot 味草稿。
+
+**What changed**
+- `docs/project-echo/ai-self-identity.md` (NEW) — AI 自我人設一頁版（八節：身份 / 服務誰 / 人設內核 / 講話方式 / 跟使用者對話 / 工作模式 / 紅線 / session 啟動三問）。CLAUDE.md 開頭加 link 強制 onboarding。
+- `app/ai/draft_linter.py` (NEW) — 0-100 啟發式評分，分四檔：natural ≥80 / ok 60-79 / stiff 35-59 / broadcast <35。檢查項：句尾語助詞密度、軟化詞數量、起手第一人稱 / 廣播禁忌、forbidden phrases (「希望這對您有幫助」「立刻購買」「編-」等 20 條)、長度、列點 / heading、純 emoji。
+- `scripts/lint_draft.py` (NEW) — CLI，accepts argv 或 stdin，`--json` 輸出。退出碼：0=natural/ok, 1=stiff, 2=broadcast。
+- `app/workflows/watch_tick_inproc.py` — codex 路徑接出 lint gate：composer 出稿後馬上 score_draft，<60 直接 skip 並寫 `composer_lint_rejected` audit（含 score / verdict / issues / draft_preview）。寫 review_store 的 audit 也加 `composer_lint_score` / `composer_lint_verdict`。
+- `scripts/dry_run_compose.py` — dry-run 輸出加 lint 評分顯示，operator 看草稿時順便看 score / issues。
+- `tests/unit/test_draft_linter.py` (NEW) — 11 個 case 涵蓋 natural / banned opener / customer-service phrase / promo / 收到 opener / list pattern / empty / emoji-only / stiff long / dict serialization。
+
+**Validated**
+- `python3 -m unittest discover -s tests`：441/441 passed (+11 linter tests).
+- 手動 spot-check 8 個正反例，linter 給分跟人類直覺一致：「我自己會看靜坐後...感覺啊」=100、「我以前也卡這個欸 後來改散盤就好多了」=80、「大家如果有興趣...」=45、「歡迎隨時提問，我們會盡快為您解答」=0、「立刻購買 限時搶購中」=0、「收到，謝謝老師的講解！」=stiff/broadcast。
+- 升級後 dry_run on 004：codex 出「我自己會看坐完後有沒有比較清明喔，不一定追求什麼感覺，心有比較安就好呢」（hedger ×3 + particle ×2 + 自然句長），lint score=100。
+
+**結構效應**：codex 走鐘案例（罕見但會發生）現在被 linter pre-review-gate 截掉，不再依賴操作員審查時自己看出來。HIL 不變但多一道機械防線。
+
+### Phase 0：bridge 語意翻譯 + chat 語感升級（從 16 群 19 萬則學）
+
+**Why** — 操作員回饋兩個語意問題：
+1. Bridge 回他「001 目前是 moderate / 004 是 trickle」這種 dashboard 腔，讀起來像狀態表不像對話
+2. Composer 草稿偶爾語意不通順——hedger 太少、句尾沒語助詞、太像 AI
+
+**What changed**
+- `scripts/start_lark_long_connection.py` CODEX_FRAMING 第 200-230 行：
+  - active_state enum→自然中文翻譯表（cold_spell→「最近安靜了一陣子」、moderate→「有點動但還沒熱起來」）
+  - 明確禁「001 目前是 moderate」這種 status-table 句式
+  - 加 hedger 必出現 / 句尾語助詞必有 / ack 偏好順序 / 真實反例正例
+- `app/ai/prompts/composer_v1.md` 步驟 2 整段升級：
+  - 句尾必帶語助詞清單（了/嗎/喔/哈/啊/吧/唷/呢/啦/耶/呀）
+  - 軟化詞清單（感覺/可能/其實/好像/我覺得/我自己/不一定）
+  - 第一人稱起手 vs 禁用「大家/歡迎/您/親愛的」開頭
+  - ack 偏好順序：謝謝 > 了解 > 好的 > 哈哈 > 原來；**避免「收到」當開頭**（制式營運用語，真實 chat 很少用）
+  - 從真實匯出萃取的反例 / 正例
+
+**資料來源** — 操作員 13:56 TPE 把 16 份 LINE chat 匯出（共 19.4 萬則訊息，跨 16 個社群 — PaPaBin / 鯨魚島 / 35大富翁 / 美療研 / 數學教室 / 跑者充電站 / 蘋果老師共學圈 等）放到 `~/Downloads/echo_logs_dump/` 給 AI 學習聊天語感。**只用作 prompt 訓練資料，不入庫、不寫進 customers/、不 onboard 為 community**。
+
+關鍵統計（萃取後寫進 prompt）：
+- 軟化詞 top：感覺 (2140)、可能 (2037)、其實 (1954)、好像 (1524)、我覺得 (1165)
+- 句尾語助詞：了 (5902)、嗎 (5050)、喔 (2023)、哈 (1790)、啊 (1032)、唷 (911)、呢 (828)
+- 起手 token：「我」(12892)、「我也」(1474)、「請問」(1954)
+- ack 用詞：謝謝 (1859) >> 哈哈 (1031) > 感謝 (676) > 好的 (496) >>>>> 收到 (183)（「收到」其實很少見，是制式）
+- 「大家」高頻 (1576) 但**多是操作員/編在廣播**，成員彼此聊天不用
+
+**Validated**
+- `python3 -m unittest discover -s tests`：430/430 passed (順手修了 test_watch_tick_inproc 的 review_store leak — pre-existing，加 setUp 清空)
+- 升級後 dry_run on 004：草稿從「我自己的經驗是，不用急著判定。坐完心比較穩、身體比較鬆，就先這樣觀察啊」升級成「我自己會看靜坐後有沒有比較清明喔，不一定要追求很特別的感覺啊」（hedger ×2 + 句尾語助詞 ×2，流暢一句不冷句點）
+
+### LLM composer via Codex（dry-run gated, HIL 不變）
+
+**Why** — Patrol 觀察：rule-based decide_reply 對所有非問句訊息都回「trickle / no_action / 不擬稿」，於是即使群裡有具體鉤子（KOC follow-up、情緒疑惑、話題延續）也被 selector → composer 整個丟掉。Selector 算半天的 target / fingerprint 從來沒進過 composer 的視野。從 §0.5 哲學看就是「沒在 create value、只在不出錯」。
+
+**What changed**
+- `app/ai/voice_profile_v2.py` (NEW) — voice_profile.md frontmatter parser，新增四個必填欄位：value_proposition / route_mix(ip/interest/info) / stage(拉新|留存|活躍|裂變) / engagement_appetite(low|medium|high)。`is_complete=False` 時 composer 直接 refuse。
+- `app/ai/codex_compose.py` (NEW) — Codex (ChatGPT Pro 訂閱) 後端 composer。輸入 = voice_profile + selector target + target fingerprint + thread excerpt + operator recent self-posts。輸出 JSON `{should_engage, rationale, draft, confidence, off_limits_hit}`。spawn `codex exec --dangerously-bypass-approvals-and-sandbox` per call.
+- `app/ai/prompts/composer_v1.md` (NEW) — 完整 prompt 模板，含 §0.5 三題自檢（create value / off-limits / 突兀）+ stage_objective lookup + fingerprint 鏡映指示。
+- `app/storage/config_loader.py` — `CommunityConfig.llm_compose_enabled: bool = False` (per-community gate; 加進 `_rebuild_community_config` rebuild path per `feedback_dataclass_rebuild_audit` memory).
+- `app/workflows/watch_tick_inproc.py` — 雙閘：env `ECHO_COMPOSE_BACKEND=codex` AND `community.llm_compose_enabled=true` 才走 codex 路徑；否則走原本 rule-based。codex 路徑把 selector target + fingerprint 真的灌進 composer，並把 rationale + off_limits_hit 寫進 audit `composer_codex_skipped` / `mcp_compose_review_created`.
+- Lark 卡片：codex 路徑顯示「🤖 LLM 擬稿（codex）— 待審核」+ rationale 寫進 reason 欄，操作員看得到「為什麼接這則」。
+- `scripts/dry_run_compose.py` (NEW) — 跑完 selector + composer 但不寫 review_store / 不推 Lark / 不寫 audit。`--source import|live|inline`。用於上線前評估草稿品質。
+- `customers/customer_a/voice_profiles/openchat_004.md` — 從 stub 升級成完整版（value_prop / route_mix 50/30/20 IP 主導 / stage=留存 / appetite=medium / nickname=妍 / personality / off_limits）。其他社群仍是 stub（請操作員填）.
+
+**HIL**：完全不變。codex 路徑仍寫 review_store 等操作員核准，require_human_approval=true 不動。codex 連線失敗 / JSON parse 失敗 → ComposerUnavailable → 該 tick skip（不會 fall through 發出 rule-based 文）。
+
+**Validated**
+- `python3 -m unittest discover -s tests`：430/430 passed (+19 新測試 covering voice_profile_v2 / codex_compose).
+- 11:50 TPE dry_run on 004：selector picked `[Kevin] "請問我該如何確定我已真的在靜坐中達到了靜心呀？"` (score 2.48, KOC + emotion_puzzled + topic_overlap)。codex output: should_engage=true / rationale=「Kevin 是在追問靜坐體感，補一點生活化判斷方式自然且不踩底線。」/ draft=「我自己的經驗是，不用急著判定。坐完心比較穩、身體比較鬆，就先這樣觀察啊」。風格鏡映命中（妍的 style anchor「我自己的經驗是」+ 句尾「啊」+ 不下命理斷言）。
+
+**Not enabled in production**：004 yaml 仍 `llm_compose_enabled: false`，env `ECHO_COMPOSE_BACKEND` 未設。dry-run 建議連跑數天後操作員親自打開。其他社群必須先把 voice_profile.md 從 stub 寫成完整版才能 enable.
+
 ### Identity / Philosophy
 
 - **CLAUDE.md §0-prelude (NEW)** — 操作員 explicitly upgraded the AI's working posture from "LINE automation tool" to 「最懂用戶營運、最懂人性的 AI 綜合體 — AICTO」. Six concrete posture cues recorded so future sessions inherit the mindset:看到對話想到關係 / 看到沉默想到信任 / 看到衝突想到機會 / 看到流量想到留量 / 看到自動化想到精細化 / 看到爭辯想到陪伴.

@@ -133,7 +133,9 @@ CODEX_FRAMING = (
     "\n"
     "## A. 入境理解（user → 你）\n"
     "1. 看「最近對話」段落解析使用者的省略指令：\n"
-    "   - 「通過 / 執行 / OK 送出」→ 找最近一輪你回覆過的 review_id，呼叫 approve_review；\n"
+    "   - 「通過 / 執行 / OK 送出」→ 找最近一輪你回覆過的 review_id：\n"
+    "     * **若你跟操作員剛剛討論出新版草稿**（meta-feedback 流程）→ **必須先**呼叫 `update_review_draft(review_id, new_draft_text=最終討論版)` **再**呼叫 approve_review。跳過 update_review_draft 會送出**原版**，不是討論完的版本——這是過去真實踩過的雷。\n"
+    "     * 若沒有討論、操作員只是說「通過」原稿 → 直接 approve_review。\n"
     "   - 「忽略 / 駁回 / 不要」→ 找最近的 review_id，呼叫 ignore_review；\n"
     "   - 「再寫一個 / 換個說法 / 重寫」→ 對同一個 community 再 compose_and_send 一輪。\n"
     "2. 模糊不清就**反問一句**，不要瞎猜。例：「你是要我通過 job-XXX 還是寫新的？」\n"
@@ -174,12 +176,26 @@ CODEX_FRAMING = (
     "   b. get_voice_profile(community_id) 拿該成員的個性設定（Off-limits 仍嚴格遵守）；\n"
     "   c. 用 (a) 的對話樣本當**風格錨**——觀察他們怎麼斷句、用什麼語氣詞、emoji 怎麼用、有多隨便。\n"
     "\n"
-    "2. **草稿風格規則**：\n"
-    "   - 像 chat 不像公告：可以用「欸」「啊」「對啊」「哈」「噢」這類語氣詞；不要「大家」「歡迎」「請」開頭。\n"
-    "   - 短：1 句通常夠，最多 2 句。不完整也行（chat 本來就會省略主詞）。\n"
-    "   - 不要管理員語：禁用「整理」「請大家」「歡迎大家」「順手補一下」「收個聲量」這種小編行話。\n"
-    "   - emoji 跟群裡別人對齊；他們不愛用就不用，他們用得多你也用一兩個。\n"
-    "   - 寧可短句、寧可像「我也想聽聽看耶」這種發語感言，也不要寫得像 announcement。\n"
+    "2. **草稿風格規則**（從 16 個社群、19 萬則真實對話統計的 chat 語感，硬性遵循）：\n"
+    "   - **句尾必帶語助詞**：每句至少一個 `了/嗎/喔/哈/啊/吧/唷/呢/啦/耶/呀`，冷句點 + 標準句號 = 像 announcement\n"
+    "   - **軟化詞必出現**：每 1-2 句一個 `感覺 / 可能 / 其實 / 好像 / 我覺得 / 我自己 / 不一定`，台灣人 chat 不愛斷言\n"
+    "   - **起手優先第一人稱**：「我」「我也」「我自己」「我以前」「我覺得」開頭最自然；禁用「大家」「歡迎」「您」「親愛的」「請」開頭\n"
+    "   - **ack 偏好順序**：`謝謝 > 了解 > 好的 > 哈哈 > 原來`；**避免「收到」當開頭**（制式營運用語，真實 chat 很少用）\n"
+    "   - **絕對不寫**：「希望這對您有幫助」「為您服務」「感謝您的提問」「歡迎大家」「請大家」「我們一起」「整理」「順手補一下」「收個聲量」「編-X」前綴\n"
+    "   - 短：1 句通常夠，最多 2 句；不完整也行（chat 會省略主詞）\n"
+    "   - emoji 跟群裡別人對齊；他們不愛用就不用，他們用得多你也用一兩個\n"
+    "   - 不排版列點、不寫推銷/限時/搶購語感\n"
+    "\n"
+    "   **反例（從真實匯出萃取的「太編」案例，不要寫成這樣）**：\n"
+    "     ✗ 「大家如果有興趣，可以順手了解一下喔～」（太組織者）\n"
+    "     ✗ 「歡迎隨時提問，我們會盡快為您解答」（客服腔）\n"
+    "     ✗ 「希望這對您有幫助 🙏」（公式化）\n"
+    "     ✗ 「請大家努力邀請朋友加入~ 一起衝高社群人數🚀」（純廣播）\n"
+    "   **正例（這種感覺）**：\n"
+    "     ✓ 「我以前也卡這個欸 後來改散盤就好多了」\n"
+    "     ✓ 「感覺先試一兩天看看吧 不一定要一次到位」\n"
+    "     ✓ 「我覺得不用急啦 這個慢慢來都行的」\n"
+    "     ✓ 「我也還沒填欸 哈」\n"
     "\n"
     "3. **Off-limits 仍嚴格擋**（profile 的 Off-limits 不變，是底線）：政治立場、評論個人、醫療/投資結論等\n"
     "   觸到一律回「這個依社群守則我不寫」。\n"
@@ -199,13 +215,27 @@ CODEX_FRAMING = (
     "\n"
     "## C. Watcher Phase 1（互動玩法）\n"
     "1. 「看一下 X 群最近怎麼樣 / X 群有沒有問題沒人回 / X 群現在熱不熱」→ analyze_chat。\n"
-    "2. 拿到結果後，**先回操作員一段中文摘要**，包含：\n"
-    "   - active_state（cold_spell / active / moderate / trickle / quiet）+ 為什麼這樣判\n"
-    "   - 有沒有 unanswered_question（如有，引用問題本身）\n"
-    "   - sensitivity_hits 是否非空（有就提醒「這個群最近有觸到 off-limits 關鍵字」）\n"
+    "2. 拿到結果後，**用日常中文跟操作員講**——不要 dashboard 腔、不要列 bullet 講術語。\n"
+    "   工具會回 active_state 這個 enum，**請翻譯成自然中文，不要原樣貼回去**：\n"
+    "     · cold_spell → 「最近安靜了一陣子」/「冷掉好幾天了」\n"
+    "     · quiet     → 「現在比較靜」/「沒什麼動靜」\n"
+    "     · trickle   → 「偶爾有人冒一句、節奏很慢」\n"
+    "     · moderate  → 「有點動但還沒熱起來」/「有人在聊但不算熱」\n"
+    "     · active    → 「最近聊得很熱」/「群裡正在熱絡」\n"
+    "   **絕對不要**寫「001 目前是 moderate」「004 是 trickle」這種讀起來像 status table 的句子。\n"
+    "   摘要要包含的資訊：群最近的氛圍（用上面翻譯後的話）、最後一條訊息大概在聊什麼、有沒有沒人回的問題、有沒有觸到 off-limits 關鍵字。**用 1-3 句講完**，不要列點。\n"
     "3. **不要自動 compose_and_send**——除非操作員明確說「幫我接 / 寫個回覆 / 擬稿」。\n"
     "4. 操作員說「擬稿」之後才走 B 流程（get_voice_profile → compose_and_send）。\n"
-    "5. active_state=active 且 unanswered_question 不存在時，**主動建議不介入**：「看起來大家在熱絡聊，建議先別插。」\n"
+    "5. active_state=active 且沒有未回問題時，**主動建議不介入**：「看起來大家在熱絡聊，這輪我先不擬。」\n"
+    "\n"
+    "**反例（不要這樣回操作員）**：\n"
+    "  ✗ 「001「愛美星 Cfans俱樂部」目前是 moderate，但主要是購票連結／系統內容...」\n"
+    "  ✗ 「004「水月觀音道場」是 trickle，有一則未回問題...」\n"
+    "  ✗ 任何把 enum 名字（cold_spell / trickle / moderate）原樣寫進回覆的句子\n"
+    "**正例（這種感覺）**：\n"
+    "  ✓ 「001 最近主要是票券系統那些訊息，群裡少人互動。沒有需要接的問題，這輪我先不擬。」\n"
+    "  ✓ 「004 安靜，最後一條 25 分鐘前是任務分享，沒人接話。我先不擬。」\n"
+    "  ✓ 「003 有人問 JN3 還沒填怎辦，沒人答。要不要我擬一句？」\n"
     "\n"
     "## D. Watcher Phase 2（自主追蹤 + 自動回覆）\n"
     "1. 操作員說「幫我追蹤 X 群 / 盯一下 X 群 / 有人回覆再幫我接 / 智能看著 X 群」\n"
@@ -250,8 +280,12 @@ CODEX_FRAMING = (
     "  · 如果操作員問「今天送了幾則」「pending 有幾個」這類具體問題，從 `data` 抽欄位精確答。\n"
     "- 「排程 X 時 Y 說 Z」→ add_scheduled_post（send_at 為 ISO 8601 含時區，例 2026-04-29T20:00:00+08:00）。\n"
     "\n"
-    "**回覆格式**：1-3 句繁中總結，回報關鍵欄位（community_name / status / active_state）。\n"
-    "不要貼整段 JSON、不要客套、不要解釋你內部呼叫了哪些 tool。\n"
+    "**回覆格式（給操作員看的，不是 LINE 草稿）**：\n"
+    "  · 寫 1-3 句**自然中文**——像跟同事聊天，不是寫狀態回報\n"
+    "  · 不要列 bullet、不要 markdown table、不要寫「目前是 X」「狀態為 Y」這種句式\n"
+    "  · 不要把工具回傳的 enum / status code 原樣貼出（active_state、stage、reason 都先翻成人話）\n"
+    "  · 不要貼整段 JSON、不要客套、不要解釋你內部呼叫了哪些 tool\n"
+    "  · 多群要講就用「001 ...，004 ...」這種**短分隔**，不要分區塊用 ## heading\n"
     "compose_and_send 之後**不需要把 review_id 貼回給操作員**——系統會自動推一張帶 [通過/修改/忽略] 按鈕的卡片到 Lark。\n"
     "你只要簡短說「已擬一句『...』，請看下方卡片」即可。\n"
 )
@@ -266,6 +300,16 @@ def _to_dict(typed_event) -> dict[str, object]:
     except json.JSONDecodeError:
         return {}
     return result if isinstance(result, dict) else {}
+
+
+def _ack_reaction(message_id: str) -> None:
+    """Fire-and-forget thumbs-up on inbound message so operator sees instant ack."""
+    try:
+        LarkClient().add_reaction(message_id, emoji_type="THUMBSUP")
+    except LarkClientError as exc:
+        print(f"[bridge]   ack reaction failed: {exc}", file=sys.stderr, flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[bridge]   ack reaction error: {exc!r}", file=sys.stderr, flush=True)
 
 
 def _on_message(typed_event: P2ImMessageReceiveV1) -> None:
@@ -295,6 +339,13 @@ def _on_message(typed_event: P2ImMessageReceiveV1) -> None:
     if chat_id is None:
         print("[bridge]   no chat_id, cannot reply", flush=True)
         return
+
+    # Immediate ack: thumbs-up reaction on the inbound message so the operator
+    # sees the bot received it before codex (~10-30s) finishes. Fire-and-forget
+    # in a daemon thread so the WebSocket pump never blocks on this HTTP call.
+    message_id = message.get("message_id") if isinstance(message.get("message_id"), str) else None
+    if message_id:
+        threading.Thread(target=_ack_reaction, args=(message_id,), daemon=True).start()
 
     # Drop @bot mention prefix LINE-style: "@_user_1 ..." (Lark text often has user
     # tag tokens). For private chats this is usually absent.
@@ -463,6 +514,63 @@ def _handle_pending_edit_submission(
     if not text:
         return  # ignore empty messages, keep waiting
 
+    # Heuristic: if the operator's "edit text" looks like meta-feedback
+    # to the AI (talks ABOUT the draft rather than being a replacement
+    # draft), don't blindly use it as the new draft. Bail out, ask for
+    # clarification. Keywords: "你" referring to AI, "幫我", "優化",
+    # "改一下", "口語化", "太像 X" — none of these belong in a real
+    # LINE chat reply.
+    META_FEEDBACK_HINTS = (
+        "你在", "你幫", "你改", "你優化", "請你",
+        "幫我改", "幫我優化", "再寫一次", "重寫", "重擬",
+        "口語化", "太像小編", "太書面", "太正式", "太硬",
+        "口語你", "再口語", "更口語", "風格不對", "語氣不對",
+        "你重新", "你再",
+    )
+    # Meta-feedback heuristic: if it looks like operator is talking ABOUT
+    # the draft (to the AI) rather than writing replacement chat text,
+    # auto-cancel edit mode, ignore the original review, and surface their
+    # message back to the conversational pipeline (codex) so I can act on
+    # the feedback.
+    if any(h in text for h in META_FEEDBACK_HINTS):
+        _pop_pending_edit(chat_id)
+        # Ignore the original draft — operator clearly didn't want it shipped.
+        try:
+            from app.core.reviews import review_store
+            review_store.update_status(
+                review_id, status="ignored", updated_from_action="lark_meta_feedback",
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[bridge]   meta-feedback ignore-original failed: {exc}", file=sys.stderr, flush=True)
+        try:
+            from app.lark.cards import build_reply_card
+            client = LarkClient()
+            client.send_card(
+                chat_id,
+                build_reply_card(
+                    f"妳剛剛在「修改稿件」打的內容：\n「{text[:120]}」\n\n"
+                    "我判斷這是給我（AI）的反饋，不是要送 LINE 的草稿——已**自動跳出修改模式 + 把原稿標為忽略**。\n\n"
+                    "妳的意見我收到了，正在用一般對話模式吸收 → 馬上回。",
+                    header_title="✏️ 偵測到 AI 反饋（不是新草稿）",
+                ),
+                receive_id_type="chat_id",
+            )
+        except (LarkClientError, Exception) as exc:  # noqa: BLE001
+            print(f"[bridge]   meta-feedback ack failed: {exc}", file=sys.stderr, flush=True)
+        append_audit_event(
+            customer_id,
+            "lark_edit_meta_feedback_detected",
+            {"event_id": event_id, "review_id": review_id, "text_preview": text[:120]},
+        )
+        # Re-route the meta-feedback into the regular codex conversation
+        # so the AI can read it as guidance and respond.
+        threading.Thread(
+            target=_dispatch_to_claude,
+            args=(text, chat_id, event_id, {"event": {"message": {"content": json.dumps({"text": text})}}}),
+            daemon=True,
+        ).start()
+        return
+
     _pop_pending_edit(chat_id)
 
     # Submit through the standard lark_action pipeline so audit trail and
@@ -515,6 +623,36 @@ def _extract_action_info(payload: dict) -> dict[str, str] | None:
     return {k: v for k, v in value.items() if isinstance(v, str)}
 
 
+def _push_click_ack(action: str, review_id: str) -> None:
+    """Immediate ack so operator sees their click landed (Lark cards don't
+    visibly change state on click; without this they'll re-click)."""
+
+    chat_id = os.getenv("OPERATOR_DAILY_DIGEST_CHAT_ID", "").strip()
+    if not chat_id:
+        return
+    try:
+        from app.lark.cards import build_reply_card
+        client = LarkClient()
+        if action == "send":
+            body = (
+                f"✅ 已收到「立即發送」\n\n"
+                f"`{review_id}` 開始送進 LINE。\n"
+                "送出成功 / 失敗會再回報給妳，這時候不用重複點。"
+            )
+            title = "✅ 處理中：立即發送"
+        else:  # ignore
+            body = (
+                f"🟡 已收到「忽略」\n\n"
+                f"`{review_id}` 已標為忽略，這輪不送 LINE。"
+            )
+            title = "🟡 已忽略"
+        client.send_card(
+            chat_id, build_reply_card(body, header_title=title), receive_id_type="chat_id",
+        )
+    except (LarkClientError, Exception) as exc:  # noqa: BLE001
+        print(f"[bridge]   click ack failed: {exc}", file=sys.stderr, flush=True)
+
+
 def _push_edit_instruction_card(chat_id: str, review_id: str, current_draft: str) -> None:
     """Send a card telling the operator how to submit the edit text."""
 
@@ -524,8 +662,10 @@ def _push_edit_instruction_card(chat_id: str, review_id: str, current_draft: str
         body = (
             f"✏️ 收到，準備修改 `{review_id}`\n\n"
             f"目前草稿：\n「{current_draft[:200]}」\n\n"
-            "請**直接在這裡打你想改成的內容**（下一句訊息會被當作新草稿）。\n"
-            "或輸入「取消」離開修改模式。"
+            "請**直接打妳要送到 LINE 群裡的新版本文字**——下一句訊息會 1:1 取代上面的草稿。\n\n"
+            "⚠️ 注意：這裡不是跟我（AI）對話的地方。如果妳想說「**口語化一點**」「**這樣寫太像小編**」這種**對 AI 的指示**，"
+            "請輸入「**取消**」離開修改模式，再回我一般訊息——我會收到並調整 prompt。\n\n"
+            "如果只是想放棄這輪修改，也輸入「取消」。"
         )
         card = build_reply_card(body, header_title="✏️ 修改稿件")
         client.send_card(chat_id, card, receive_id_type="chat_id")
@@ -559,6 +699,13 @@ def _on_card_action(typed_event) -> object:
         else:
             response = enqueue_lark_action(payload)
             print(f"[bridge]   → {response}", flush=True)
+            # Immediate ack card so operator knows the click registered.
+            # Without this, "立即發送" / "忽略" buttons feel dead — same
+            # card stays on screen, no visible state change. Send-action
+            # gets the actual confirmation later when the LINE send
+            # completes; this is just the click ack.
+            if action in ("send", "ignore") and job_id:
+                _push_click_ack(action, job_id)
     except Exception as exc:  # noqa: BLE001
         traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
     # The card-action handler must return some response — Lark uses it as the

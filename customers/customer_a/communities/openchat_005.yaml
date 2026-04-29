@@ -11,3 +11,5 @@ input_y: null
 send_x: null
 send_y: null
 operator_nickname: "Eric_營運"
+# Codex composer enabled 2026-04-29 (Bicome 內部 showcase 群，voice_profile drafted).
+llm_compose_enabled: true

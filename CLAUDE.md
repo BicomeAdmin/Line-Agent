@@ -1,6 +1,8 @@
 # Project Echo — 工作守則（給協作的 AI / 工程師）
 
 > 這份文件是這個專案的「不變條件」。任何 Claude session 開始工作前先讀這份，**不需要使用者重複叮嚀**。
+>
+> 進階版「我是誰」self-statement 在 [`docs/project-echo/ai-self-identity.md`](docs/project-echo/ai-self-identity.md)——把 §0-prelude + §0.5 + Taiwan chat register 凝縮成一頁 onboarding。新 session 強烈建議讀完當熱身。
 
 ---
 
@@ -325,10 +327,18 @@ python3 scripts/backup_state.py --json     # 機器可讀輸出
 
 產出的內容是**草稿**，進 review_store 等操作員審核，不直接外送。
 
-**LLM 路徑**已寫好但 dormant（`ECHO_LLM_ENABLED=false`），開啟前需要：
-- 使用者授權使用獨立 Anthropic API key（**不用** `ANTHROPIC_API_KEY` 系統環境變數，那是 Claude Code 自己用的）
-- 跟使用者訪談寫該 community 的客製 persona / playbook
-- 在低風險測試群跑 dry-run 評估草稿品質**才能**用於營運社群
+**LLM 路徑**有兩條，使用哪條看下面：
+
+1. **Anthropic API**（[`app/ai/llm_client.py`](app/ai/llm_client.py)，dormant）：`ECHO_LLM_ENABLED=true` + `ANTHROPIC_API_KEY` 才開。**不用**這條，會付 token 費，且 AUP classifier 會擋 LINE-automation 工具表面（CLAUDE.md §8）。
+
+2. **Codex 訂閱**（[`app/ai/codex_compose.py`](app/ai/codex_compose.py)，**production-ready, dry-run gated**，2026-04-29 上線）：
+   - 雙閘：env `ECHO_COMPOSE_BACKEND=codex` **AND** `community.llm_compose_enabled=true`（兩個都要 true 才走 codex）
+   - voice_profile.md 必須有完整 frontmatter（value_proposition / route_mix / stage / engagement_appetite）+ nickname + personality + off_limits，否則 `ComposerUnavailable: voice_profile_incomplete:<missing>` → 該 tick skip
+   - 草稿仍走 review_store / Lark 卡片 → 操作員核准；HIL 不變
+   - 上線前用 `python3 scripts/dry_run_compose.py --community-id <id>` 評估品質（不寫 review_store）
+   - prompt 模板：[`app/ai/prompts/composer_v1.md`](app/ai/prompts/composer_v1.md)（含 §0.5 三題自檢、stage_objective lookup、fingerprint 鏡映指示）
+   - 試點社群：**openchat_004（妍／水月觀音道場）**，voice_profile 已從 stub 升級成完整版
+   - **其他社群尚未 enable** — 各社群必須先把 voice_profile.md 寫完整，再由操作員親自 flip yaml `llm_compose_enabled: true` + 設 env `ECHO_COMPOSE_BACKEND=codex`，AI 不會自動打開
 
 ---
 

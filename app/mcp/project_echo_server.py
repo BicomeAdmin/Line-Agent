@@ -364,6 +364,50 @@ def tool_approve_review(review_id: str) -> dict[str, Any]:
     return _error("send_failed", send_result=send_result)
 
 
+def tool_update_review_draft(review_id: str, new_draft_text: str, reason: str = "operator_meta_feedback_revision") -> dict[str, Any]:
+    """Replace the draft text of an existing pending review without changing
+    its status. Use this when the operator's meta-feedback chat has produced
+    a new agreed version of the draft — call this BEFORE approve_review so
+    that the actual sent message matches what was discussed."""
+
+    record = review_store.get(review_id)
+    if record is None:
+        return _error("review_not_found", review_id=review_id)
+    if record.status not in ACTIVE_REVIEW_STATUSES:
+        return _error("review_not_active", current_status=record.status)
+    cleaned = (new_draft_text or "").strip()
+    if not cleaned:
+        return _error("empty_draft", review_id=review_id)
+    updated = review_store.update_draft_text(review_id, cleaned, updated_from_action=reason)
+    if updated is None:
+        return _error("update_failed", review_id=review_id)
+    # Lint the new draft so we surface stiff/broadcast risk to operator.
+    try:
+        from app.ai.draft_linter import score_draft
+        lint = score_draft(cleaned)
+    except Exception as exc:  # noqa: BLE001
+        lint = None
+    append_audit_event(
+        record.customer_id,
+        "review_draft_updated",
+        {
+            "review_id": review_id,
+            "community_id": record.community_id,
+            "previous_text_preview": record.draft_text[:80],
+            "new_text_preview": cleaned[:80],
+            "reason": reason,
+            "lint_score": getattr(lint, "score", None),
+            "lint_verdict": getattr(lint, "verdict", None),
+        },
+    )
+    return _ok({
+        "review_id": review_id,
+        "new_draft_text": cleaned,
+        "lint_score": getattr(lint, "score", None),
+        "lint_verdict": getattr(lint, "verdict", None),
+    })
+
+
 def tool_ignore_review(review_id: str, reason: str = "operator_ignored") -> dict[str, Any]:
     record = review_store.get(review_id)
     if record is None:
@@ -972,6 +1016,21 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
             "additionalProperties": False,
         },
         lambda review_id, **_: tool_approve_review(review_id=review_id),
+    ),
+    (
+        "update_review_draft",
+        "Replace the draft text of an existing pending review WITHOUT changing its status. **MANDATORY** when the operator's meta-feedback discussion has produced a new agreed wording — call this with the new text BEFORE calling approve_review. If you skip this and call approve directly, the OLD draft text gets sent to LINE, not the discussed final version. Returns the new lint score so you can sanity-check the rewrite.",
+        {
+            "type": "object",
+            "properties": {
+                "review_id": {"type": "string"},
+                "new_draft_text": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["review_id", "new_draft_text"],
+            "additionalProperties": False,
+        },
+        lambda review_id, new_draft_text, reason="operator_meta_feedback_revision", **_: tool_update_review_draft(review_id=review_id, new_draft_text=new_draft_text, reason=reason),
     ),
     (
         "ignore_review",
