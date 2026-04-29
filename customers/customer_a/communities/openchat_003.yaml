@@ -11,3 +11,10 @@ input_y: null
 send_x: null
 send_y: null
 operator_nickname: "愛莎"
+auto_watch:
+  enabled: true
+  start_hour_tpe: 10
+  end_hour_tpe: 22
+  duration_minutes: 720      # 12h: 10:00 → 22:00 TPE
+  cooldown_seconds: 600      # 10 分鐘內同 watch 不重複擬稿
+  poll_interval_seconds: 60  # 每分鐘掃一次新內容
