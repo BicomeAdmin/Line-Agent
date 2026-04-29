@@ -34,6 +34,8 @@ class DigestHealth:
     marker_present: bool
     marker_value: str | None
     sent_today: bool
+    audit_sent_event: dict[str, Any] | None = None
+    audit_failed_event: dict[str, Any] | None = None
     log_push_lines: list[str] = field(default_factory=list)
     log_error_lines: list[str] = field(default_factory=list)
     rendered_preview: str = ""
@@ -78,6 +80,21 @@ def collect_digest_health(
     log_push = _grep_today(SCHEDULER_LOG, today_str, push_pattern)
     log_err = _grep_today(SCHEDULER_LOG, today_str, err_pattern)
 
+    today_iso_prefix = (now or datetime.now(TPE)).astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%d")
+    recent_events = read_recent_audit_events(customer_id, limit=200)
+    audit_sent = next(
+        (e for e in reversed(recent_events)
+         if e.get("event_type") == "daily_digest_sent"
+         and str(e.get("timestamp", "")).startswith(today_iso_prefix)),
+        None,
+    )
+    audit_failed = next(
+        (e for e in reversed(recent_events)
+         if e.get("event_type") == "daily_digest_failed"
+         and str(e.get("timestamp", "")).startswith(today_iso_prefix)),
+        None,
+    )
+
     # Re-render compact report against current state (does NOT send)
     data = collect_dashboard_data(customer_id)
     preview = "🌅 今日 Project Echo 摘要\n\n" + format_text_report(data, compact=True)
@@ -97,6 +114,8 @@ def collect_digest_health(
         marker_present=marker.exists(),
         marker_value=marker_value,
         sent_today=sent_today,
+        audit_sent_event=audit_sent,
+        audit_failed_event=audit_failed,
         log_push_lines=log_push,
         log_error_lines=log_err,
         rendered_preview=preview,
@@ -165,6 +184,12 @@ def render_text_report(
         out.append(f"  目標時段:    每天 {digest.target_hour:02d}:00-{digest.target_hour:02d}:05 TPE")
         out.append(f"  Marker 檔:   {'✅ 存在' if digest.marker_present else '❌ 缺'}  (值={digest.marker_value or 'N/A'})")
         out.append(f"  今日送出:    {'✅ YES' if digest.sent_today else '⏳ NOT YET (' + digest.today_str + ')'}")
+        if digest.audit_sent_event:
+            payload = digest.audit_sent_event.get("payload") or {}
+            out.append(f"  Audit:       ✅ daily_digest_sent  ts={digest.audit_sent_event.get('timestamp', '')}  chars={payload.get('char_count')}")
+        if digest.audit_failed_event:
+            payload = digest.audit_failed_event.get("payload") or {}
+            out.append(f"  Audit:       ⚠️ daily_digest_failed  err={payload.get('error', '')[:80]}")
         out.append(f"  Log push:    {len(digest.log_push_lines)} 筆")
         for ln in digest.log_push_lines[-3:]:
             out.append(f"    » {ln.strip()}")

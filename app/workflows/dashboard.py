@@ -288,23 +288,35 @@ def _summarize_audit_payload(event: dict[str, object]) -> str:
 
 
 def _process_health() -> dict[str, dict[str, object]]:
-    """Use `pgrep -f` to detect running daemon + bridge."""
+    """Use `pgrep -f` to detect running daemon + bridge.
+
+    Retries once on miss to absorb transient macOS proc-table contention
+    (observed false negatives when called from within the daemon itself
+    during its dashboard-push cycle).
+    """
+
+    import subprocess
+    import time as _time
 
     out: dict[str, dict[str, object]] = {}
     for label, needle in PROC_GREP_NAMES.items():
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["pgrep", "-f", needle],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-            pids = [int(p) for p in result.stdout.split() if p.isdigit()]
-        except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
-            pids = []
+        pids: list[int] = []
+        for attempt in range(2):
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-f", needle],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                pids = [int(p) for p in result.stdout.split() if p.isdigit()]
+            except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+                pids = []
+            if pids:
+                break
+            if attempt == 0:
+                _time.sleep(0.05)
         if pids:
-            # Real worker process is the python one, not the shell wrapper.
             chosen = _pick_worker_pid(pids, needle)
             out[label] = {
                 "running": True,

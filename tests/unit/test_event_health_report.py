@@ -96,6 +96,49 @@ class DigestHealthTests(unittest.TestCase):
                 p.stop()
         self.assertEqual(len(h.log_error_lines), 1)
 
+    def test_audit_events_surfaced(self) -> None:
+        now = datetime(2026, 4, 29, 9, 10, tzinfo=TPE)
+        patches = self._patch_paths("2026-04-29", [])
+        events = [
+            {"timestamp": "2026-04-29T01:00:28+00:00", "event_type": "daily_digest_sent",
+             "payload": {"chat_id_prefix": "oc_xxx", "char_count": 1234}},
+            {"timestamp": "2026-04-28T01:00:31+00:00", "event_type": "daily_digest_sent",
+             "payload": {"chat_id_prefix": "oc_xxx", "char_count": 1100}},
+        ]
+        audit_patch = patch.object(ehr, "read_recent_audit_events", return_value=events)
+        for p in patches:
+            p.start()
+        audit_patch.start()
+        try:
+            h = ehr.collect_digest_health(now=now)
+        finally:
+            audit_patch.stop()
+            for p in patches:
+                p.stop()
+        self.assertIsNotNone(h.audit_sent_event)
+        self.assertEqual((h.audit_sent_event or {}).get("payload", {}).get("char_count"), 1234)
+        self.assertIsNone(h.audit_failed_event)
+
+    def test_audit_failed_event_surfaced(self) -> None:
+        now = datetime(2026, 4, 29, 9, 10, tzinfo=TPE)
+        patches = self._patch_paths(None, [])
+        events = [
+            {"timestamp": "2026-04-29T01:00:28+00:00", "event_type": "daily_digest_failed",
+             "payload": {"error": "lark timeout"}},
+        ]
+        audit_patch = patch.object(ehr, "read_recent_audit_events", return_value=events)
+        for p in patches:
+            p.start()
+        audit_patch.start()
+        try:
+            h = ehr.collect_digest_health(now=now)
+        finally:
+            audit_patch.stop()
+            for p in patches:
+                p.stop()
+        self.assertIsNone(h.audit_sent_event)
+        self.assertIsNotNone(h.audit_failed_event)
+
 
 class WatcherHealthTests(unittest.TestCase):
     def setUp(self) -> None:
