@@ -6,6 +6,41 @@ This file is the lightweight engineering log for Project Echo.
 
 ## 2026-04-30
 
+### Post-send input-box check：偵測 LINE 靜默送出失敗
+
+**Why** — 2026-04-29 16:13 send_attempt 紀錄 `status=sent`，但 LINE 聊天輸入框仍殘留草稿文字。操作員看 send_result 以為失敗、手動重觸發，結果同則草稿被送出 2-3 次。pipeline 與 LINE 應用層之間有靜默斷層，audit 看不出來。
+
+**What changed**
+- `app/adb/input.py` 加 `check_input_box_cleared(client)`：dump UI 抓 `chat_ui_message_edit` 的 `text=` 屬性，回 `cleared` / `not_cleared`（含 redacted preview + length）/ `unknown`（dump 失敗或節點不存在 — 不視為失敗訊號）
+- `app/workflows/send_reply.py`：`send_attempt status=sent` 之後跑檢查；殘留文字則 emit `send_attempt_input_box_not_cleared` audit，payload 帶 `severity=important` 與 `action_hint`「上一次送出可能沒成功；確認 LINE 群裡是否實際出現訊息再決定是否重送」。**不自動重試、不自動清除、不動 `_approve_send` HIL gate**
+- `app/web/dashboard_server.py` `_summarize` 加新 event 顯示行
+- 涵蓋 live-watch 與 operator-triggered compose 兩條 send 路徑（共用 `send_draft`）
+
+**Schema for parallel sessions** — 新 audit event type:
+```
+event_type: "send_attempt_input_box_not_cleared"
+payload: {
+  community_id: str,
+  device_id: str,
+  preview: str (≤40 chars + "…"),
+  residual_length: int,
+  severity: "important",
+  action_hint: str (operator-facing 繁中)
+}
+```
+若 `alert_aggregator._EVENT_RULES` 已合進 master，可直接掛此 event_type → important/community 級。
+
+**Validated**
+- 全套測試 444/444（mac local）→ ff merge 進 master 後因為其他 session commits 帶來新測試，總數會更高，未在主 repo 重跑（多個 session 並行中）
+- `tests/unit/test_adb_input.py` 新增 3 case：empty / 殘留文字 / 節點不存在；節點不存在不誤報
+
+**Cost** — 每次 sent 多一次 `uiautomator dump`（~0.5s）。換不誤觸雙送，划算。
+
+**未做的事 / 設計取捨**
+- 沒做 auto-clear 殘留文字：可能是上一輪沒送出的真實草稿，自動清會吃掉操作員未存稿
+- 沒做 auto-retry：分不清「LINE 暫時卡住 → 重試會雙送」vs「LINE 真的吞了 → 重試是對的」，交給操作員判斷
+- 沒接 Lark push：alert_aggregator 一旦 merge 就接得上，不另外 hard-wire 通道
+
 ### 事件：openchat_004 operator_nickname 「翊」誤填「妍」6 個月 + Phase A/B 修復
 
 **Why** — Onboarding 時看 LINE 截圖把翊看成妍，寫進 `customers/customer_a/communities/openchat_004.yaml` `operator_nickname` 欄位 + voice_profile + 5 份活文件。錯位 6 個月，污染 fingerprints / lifecycle / kpi / relationship_graph，22 筆 pending review 建在污染資料上、6 筆 sent review 已外送。操作員 2026-04-30 看 dashboard 暱稱欄發現。
