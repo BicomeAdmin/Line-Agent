@@ -507,15 +507,37 @@ def tool_scheduled_post_status(community_id: str | None = None) -> dict[str, Any
 def tool_add_scheduled_post(
     community_id: str,
     send_at: str,
-    text: str,
+    text: str | None = None,
     customer_id: str | None = None,
     note: str | None = None,
+    brief: str | None = None,
+    compose_mode: bool = False,
+    compose_lead_hours: float | None = None,
+    recurrence: str | dict | None = None,
 ) -> dict[str, Any]:
     customer_id = customer_id or _default_customer_for_community(community_id)
     if customer_id is None:
         return _error("community_not_found", community_id=community_id)
     try:
-        return _ok({"post": add_scheduled_post(customer_id, community_id, send_at, text, notes=note)})
+        if isinstance(recurrence, str):
+            from app.workflows.scheduled_post_recurrence import parse_recurrence_string
+            recurrence_norm = parse_recurrence_string(recurrence) if recurrence else None
+        else:
+            recurrence_norm = recurrence
+        compose_lead_seconds = (
+            int(compose_lead_hours * 3600) if compose_lead_hours is not None else None
+        )
+        return _ok({"post": add_scheduled_post(
+            customer_id,
+            community_id,
+            send_at,
+            text,
+            notes=note,
+            brief=brief,
+            compose_mode=compose_mode,
+            compose_lead_seconds=compose_lead_seconds,
+            recurrence=recurrence_norm,
+        )})
     except ValueError as exc:
         return _error("invalid_input", detail=str(exc))
 
@@ -1576,20 +1598,34 @@ TOOL_DEFINITIONS: list[tuple[str, str, dict[str, Any], Any]] = [
     ),
     (
         "add_scheduled_post",
-        "Schedule a message for future delivery. send_at must be ISO 8601 with timezone, e.g. 2026-04-29T20:00:00+08:00. The post will go through the same review pipeline at send time.",
+        "Schedule a message for future delivery. send_at must be ISO 8601 with timezone, e.g. 2026-04-29T20:00:00+08:00. Two modes: (1) supply `text` for direct send (operator-written content); (2) supply `brief` + `compose_mode=true` for codex_compose-driven brand voice — fires `compose_lead_hours` before send_at (default 4h), produces an LLM draft against the community's voice_profile, lands as a Lark review card. Compose-mode posts ALWAYS go through review (pre_approved is ignored). `recurrence` accepts 'daily@HH:MM' / 'weekly:mon@HH:MM' / 'monthly:1@HH:MM' / 'once'.",
         {
             "type": "object",
             "properties": {
                 "community_id": {"type": "string"},
                 "send_at": {"type": "string", "description": "ISO 8601 with timezone offset"},
-                "text": {"type": "string"},
+                "text": {"type": "string", "description": "Operator-written post body. Required unless compose_mode=true."},
+                "brief": {"type": "string", "description": "Topic for codex_compose. Required when compose_mode=true."},
+                "compose_mode": {"type": "boolean", "description": "Run codex_compose at fire time against voice_profile instead of sending text directly."},
+                "compose_lead_hours": {"type": "number", "description": "Hours before send_at to run codex_compose (default 4h)."},
+                "recurrence": {"type": "string", "description": "Recurrence spec: daily@HH:MM / weekly:mon@HH:MM / monthly:1@HH:MM / once"},
                 "customer_id": {"type": "string"},
                 "note": {"type": "string"},
             },
-            "required": ["community_id", "send_at", "text"],
+            "required": ["community_id", "send_at"],
             "additionalProperties": False,
         },
-        lambda community_id, send_at, text, customer_id=None, note=None, **_: tool_add_scheduled_post(community_id=community_id, send_at=send_at, text=text, customer_id=customer_id, note=note),
+        lambda community_id, send_at, text=None, brief=None, compose_mode=False, compose_lead_hours=None, recurrence=None, customer_id=None, note=None, **_: tool_add_scheduled_post(
+            community_id=community_id,
+            send_at=send_at,
+            text=text,
+            brief=brief,
+            compose_mode=compose_mode,
+            compose_lead_hours=compose_lead_hours,
+            recurrence=recurrence,
+            customer_id=customer_id,
+            note=note,
+        ),
     ),
     (
         "cancel_scheduled_post",

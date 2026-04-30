@@ -22,6 +22,26 @@ TERMINAL_REVIEW_STATUSES = {"sent", "ignored", "recalled"}
 NEAR_DUPLICATE_WINDOW_MINUTES = 10
 
 
+def hash_off_limits(off_limits_text: str | None) -> str:
+    """Stable short hash for the voice_profile off-limits section.
+
+    Used to detect drift between compose-time and approve-time: if the
+    operator edits off-limits in between, the approve-time check
+    surfaces a warning so they can re-evaluate the pending draft
+    against the new rules.
+
+    Whitespace-normalized so cosmetic re-indentation doesn't trigger
+    a false drift signal. Empty / None → empty string (no drift check).
+    """
+
+    import hashlib
+    text = (off_limits_text or "").strip()
+    if not text:
+        return ""
+    normalized = " ".join(text.split())
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
+
+
 @dataclass
 class ReviewRecord:
     review_id: str
@@ -38,6 +58,12 @@ class ReviewRecord:
     updated_from_action: str | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    # Snapshot of voice_profile.off_limits at compose time. If operator
+    # edits the off-limits rules between compose and approve, the
+    # approve-time check compares this stored hash to the current
+    # off-limits hash and surfaces a drift warning. Empty string when
+    # off-limits wasn't snapshotted (legacy reviews / non-codex paths).
+    off_limits_hash: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -173,6 +199,7 @@ class ReviewStore:
                 updated_from_action=str(payload["updated_from_action"]) if isinstance(payload.get("updated_from_action"), str) else None,
                 created_at=float(payload.get("created_at", time.time())),
                 updated_at=float(payload.get("updated_at", time.time())),
+                off_limits_hash=str(payload.get("off_limits_hash", "")),
             )
             latest[record.review_id] = record
         self._reviews = latest

@@ -71,6 +71,34 @@ def tick_one_inprocess(watch: dict[str, object]) -> dict[str, object]:
     if nav.get("status") != "ok":
         return {"acted": False, "reason": f"navigate_failed:{nav.get('reason')}"}
 
+    # Cross-community contamination guard: between navigate's success
+    # and read_recent_chat, LINE could have foregrounded a different
+    # room (notification tap, deep-link, OS lifecycle). Drafting from
+    # the wrong chat would let community A's voice land in community
+    # B's review queue. Verify the header still matches expected.
+    from app.workflows.openchat_verify import verify_chat_title
+    title_check = verify_chat_title(
+        AdbClient(device_id=community.device_id),
+        default_raw_xml_path(customer_id),
+        community.display_name,
+    )
+    if not title_check.ok:
+        append_audit_event(
+            customer_id,
+            "watch_tick_chat_title_mismatch",
+            {
+                "community_id": community_id,
+                "expected": title_check.expected,
+                "current_title": title_check.current_title,
+                "reason": title_check.reason,
+            },
+        )
+        return {
+            "acted": False,
+            "reason": f"chat_title_mismatch:{title_check.reason}",
+            "title_check": title_check.to_dict(),
+        }
+
     try:
         messages = read_recent_chat(
             AdbClient(device_id=community.device_id),
@@ -96,6 +124,34 @@ def tick_one_inprocess(watch: dict[str, object]) -> dict[str, object]:
             "reason": f"prior_auto_watch_pending:{pending_id}",
             "new_signature": new_sig,
         }
+
+    # Bot-pattern guard: refuse compose if cumulative AI-draft volume
+    # in this community would tip members off. Independent of single-
+    # message judgment — it's about the BAND of the operator's recent
+    # apparent behavior. Block @ ≥10/day, warn (audit-only) @ ≥5/day.
+    from app.workflows.bot_pattern_guard import assess_bot_pattern_risk
+    bot_risk = assess_bot_pattern_risk(customer_id, community_id)
+    if bot_risk.risk == "block":
+        append_audit_event(
+            customer_id,
+            "watch_tick_blocked_bot_pattern",
+            {
+                "community_id": community_id,
+                "verdict": bot_risk.to_dict(),
+            },
+        )
+        return {
+            "acted": False,
+            "reason": f"bot_pattern_block:{bot_risk.daily_draft_count}_drafts_24h",
+            "bot_pattern": bot_risk.to_dict(),
+            "new_signature": new_sig,
+        }
+    if bot_risk.risk == "warn":
+        append_audit_event(
+            customer_id,
+            "watch_tick_bot_pattern_warning",
+            {"community_id": community_id, "verdict": bot_risk.to_dict()},
+        )
 
     # Persona + fingerprints for the selector.
     try:
@@ -160,18 +216,34 @@ def tick_one_inprocess(watch: dict[str, object]) -> dict[str, object]:
             if isinstance(p, dict)
         ]
 
+        # Locate the target message in the thread so we can pass its
+        # timestamp to the composer's temporal-gate. Selector returns
+        # the picked message's `text` + `sender`; we match back to the
+        # raw thread to recover ts_epoch (which selector doesn't carry).
+        target_text = str(target.get("text") or "")
+        target_sender = str(target.get("sender") or "")
+        target_ts_epoch: float | None = None
+        for m in reversed(messages):
+            if str(m.get("text") or "") == target_text and str(m.get("sender") or "") == target_sender:
+                ts = m.get("ts_epoch")
+                if isinstance(ts, (int, float)):
+                    target_ts_epoch = float(ts)
+                break
+
         try:
             output = compose_via_codex(
                 voice_profile=vp,
                 community_name=community.display_name,
-                target_sender=str(target.get("sender") or ""),
-                target_message=str(target.get("text") or ""),
+                target_sender=target_sender,
+                target_message=target_text,
                 target_score=float(target.get("score") or 0.0),
                 target_threshold=float(decision_dict.get("threshold") or 2.0),
                 target_reasons=list(target.get("reasons") or []),
                 target_fingerprint=target_fp_dict,
                 thread_excerpt=messages[-8:],
                 recent_self_posts=recent_self_posts,
+                target_ts_epoch=target_ts_epoch,
+                now_epoch=time.time(),
             )
         except ComposerUnavailable as exc:
             append_audit_event(
@@ -189,6 +261,34 @@ def tick_one_inprocess(watch: dict[str, object]) -> dict[str, object]:
         composer_source = "codex"
         composer_rationale = output.rationale
         composer_off_limits_hit = output.off_limits_hit
+
+        # Belt-and-suspenders temporal override: even if the LLM said
+        # should_engage=true, if target is provably > 3h old we refuse.
+        # The selector layer should have already disqualified, but if
+        # something slipped (e.g. ts pairing recovered late, or the
+        # operator manually set a high threshold that lets stale items
+        # through), this is the last guard before review_store.
+        if output.should_engage and target_ts_epoch is not None:
+            stale_minutes = (time.time() - target_ts_epoch) / 60.0
+            if stale_minutes > 180:
+                append_audit_event(
+                    customer_id,
+                    "composer_temporal_override",
+                    {
+                        "community_id": community_id,
+                        "target_sender": target_sender,
+                        "stale_minutes": int(stale_minutes),
+                        "llm_said_engage_true": True,
+                        "draft_preview": (output.draft or "")[:80],
+                    },
+                )
+                return {
+                    "acted": False,
+                    "reason": f"composer_skipped:server_temporal_override({int(stale_minutes)}min)",
+                    "rationale": f"伺服器強制 skip：目標訊息 {int(stale_minutes)} 分鐘前，LLM 失察",
+                    "new_signature": new_sig,
+                    "selector_top_score": target.get("score"),
+                }
 
         if not output.should_engage:
             append_audit_event(
@@ -269,6 +369,20 @@ def tick_one_inprocess(watch: dict[str, object]) -> dict[str, object]:
     # Stage as pending review (mirror tool_compose_and_send shape).
     customer = load_customer_config(customer_id)
     review_id = f"watch-inproc-{int(time.time())}-{community_id}"
+    # Snapshot off_limits hash so approve-time can detect drift if the
+    # operator edits voice_profile rules between compose and approve.
+    from app.core.reviews import hash_off_limits
+    off_limits_hash = ""
+    if composer_source == "codex":
+        try:
+            from app.ai.voice_profile_v2 import parse_voice_profile
+            from app.storage.paths import voice_profile_path as _vp_path
+            _vp_for_hash = parse_voice_profile(
+                customer_id, community_id, _vp_path(customer_id, community_id),
+            )
+            off_limits_hash = hash_off_limits(_vp_for_hash.off_limits)
+        except Exception:  # noqa: BLE001 — hash is best-effort
+            off_limits_hash = ""
     record = ReviewRecord(
         review_id=review_id,
         source_job_id=review_id,
@@ -281,6 +395,7 @@ def tick_one_inprocess(watch: dict[str, object]) -> dict[str, object]:
         reason="mcp_compose:auto_watch",
         confidence=draft.confidence,
         status="pending",
+        off_limits_hash=off_limits_hash,
     )
     review_store.upsert(record)
     append_audit_event(

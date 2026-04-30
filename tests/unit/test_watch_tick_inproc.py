@@ -40,6 +40,17 @@ class WatchTickInprocTests(unittest.TestCase):
         from app.core.reviews import review_store
         with review_store._lock:
             review_store._reviews.clear()
+        # Default chat-title verifier passes — individual tests can
+        # override to test the cross-community contamination guard.
+        from app.workflows.openchat_verify import TitleVerification
+        self._title_patch = patch(
+            "app.workflows.openchat_verify.verify_chat_title",
+            return_value=TitleVerification(
+                ok=True, expected="X", current_title="X", reason="match",
+            ),
+        )
+        self._title_patch.start()
+        self.addCleanup(self._title_patch.stop)
 
     def test_outside_activity_window_returns_skip(self) -> None:
         with patch("app.core.risk_control.default_risk_control", _FakeRiskControl(in_window=False)):
@@ -115,6 +126,66 @@ class WatchTickInprocTests(unittest.TestCase):
         types = [c[0][1] for c in audit.call_args_list]
         self.assertIn("mcp_compose_review_created", types)
         self.assertIn("watch_tick_fired", types)
+
+
+class TemporalOverrideTests(unittest.TestCase):
+    """Belt-and-suspenders: even if codex says should_engage=true,
+    a target proven > 3h old gets server-side override → skip."""
+
+    def setUp(self) -> None:
+        from app.workflows.openchat_verify import TitleVerification
+        self._title_patch = patch(
+            "app.workflows.openchat_verify.verify_chat_title",
+            return_value=TitleVerification(
+                ok=True, expected="X", current_title="X", reason="match",
+            ),
+        )
+        self._title_patch.start()
+        self.addCleanup(self._title_patch.stop)
+
+    def test_override_when_target_stale_beyond_3h(self) -> None:
+        import time
+        # Stale target — 4h old.
+        stale_ts = time.time() - 4 * 3600
+        msgs = [{"text": "?", "sender": "alice", "ts_epoch": stale_ts}]
+        decision = MagicMock()
+        decision.to_dict.return_value = {
+            "target": {"actionable": True, "score": 5.0, "sender": "alice", "text": "?", "index": 0},
+            "threshold": 2.0,
+            "skip_reason": None,
+        }
+        community = MagicMock(device_id="emulator-5554", display_name="X", llm_compose_enabled=True)
+        customer = MagicMock(display_name="C")
+        # Mock codex saying engage=true (the LLM "missed" the staleness)
+        codex_output = MagicMock(
+            should_engage=True, draft="我也想回啊",
+            rationale="(LLM ignored time)", confidence=0.7, off_limits_hit=None,
+        )
+        with patch("app.core.risk_control.default_risk_control", _FakeRiskControl()), \
+             patch.object(wti, "navigate_to_openchat", return_value={"status": "ok"}), \
+             patch.object(wti, "load_community_config", return_value=community), \
+             patch.object(wti, "load_customer_config", return_value=customer), \
+             patch.object(wti, "read_recent_chat", return_value=msgs), \
+             patch("app.workflows.persona_context.get_persona_context",
+                   return_value={"voice_profile": {"personality_zh": "test"},
+                                 "recent_self_posts": []}), \
+             patch("app.workflows.member_fingerprint.load_member_fingerprints", return_value={}), \
+             patch.object(wti, "select_reply_target_workflow", return_value=decision), \
+             patch("app.ai.codex_compose.is_enabled", return_value=True), \
+             patch("app.ai.codex_compose.compose_via_codex", return_value=codex_output), \
+             patch("app.ai.voice_profile_v2.parse_voice_profile",
+                   return_value=MagicMock(is_complete=True, missing_fields=[])), \
+             patch("app.workflows.watch_tick_inproc.review_store") as store, \
+             patch("app.workflows.watch_tick_inproc.append_audit_event") as audit:
+            store.list_all.return_value = []
+            r = wti.tick_one_inprocess(_stub_watch())
+        self.assertFalse(r["acted"])
+        self.assertIn("server_temporal_override", r["reason"])
+        # Critical: review_store NOT touched, no Lark card pushed
+        store.upsert.assert_not_called()
+        # Audit captured the override decision
+        types = [c[0][1] for c in audit.call_args_list]
+        self.assertIn("composer_temporal_override", types)
 
 
 class ModelWarmupTests(unittest.TestCase):
