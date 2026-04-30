@@ -425,6 +425,8 @@ def _summarize(event: dict) -> str:
     cid = payload.get("community_id") or ""
     if et == "send_attempt":
         return f"{cid} status={payload.get('status')} delay={payload.get('delay_seconds')}"
+    if et == "send_attempt_input_box_not_cleared":
+        return f"⚠️ {cid} 輸入框未清空（殘留 {payload.get('residual_length')} 字）「{(payload.get('preview') or '')}」"
     if et == "mcp_compose_review_created":
         return f"{cid} review={payload.get('review_id')} «{(payload.get('text_preview') or '')[:40]}»"
     if et == "watch_tick_fired":

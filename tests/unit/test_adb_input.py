@@ -1,7 +1,8 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from app.adb.input import build_send_plan, tap_type_send
+from app.adb.input import build_send_plan, check_input_box_cleared, tap_type_send
 
 
 class AdbInputTests(unittest.TestCase):
@@ -29,6 +30,43 @@ class AdbInputTests(unittest.TestCase):
         self.assertEqual(result["status"], "dry_run")
         plan = result["plan"]
         self.assertEqual(plan["send_tap"], {"x": 30, "y": 40})
+
+
+class CheckInputBoxClearedTests(unittest.TestCase):
+    def _client_with_xml(self, xml: str) -> MagicMock:
+        client = MagicMock()
+        # First shell call is the dump (no return value used); second is `cat`.
+        client.shell.side_effect = [
+            MagicMock(stdout=""),
+            SimpleNamespace(stdout=xml),
+        ]
+        return client
+
+    def test_input_empty_returns_cleared(self) -> None:
+        xml = (
+            '<hierarchy><node resource-id="jp.naver.line.android:id/chat_ui_message_edit" '
+            'text="" bounds="[0,0][100,50]" /></hierarchy>'
+        )
+        result = check_input_box_cleared(self._client_with_xml(xml))
+        self.assertEqual(result["status"], "cleared")
+
+    def test_input_with_residual_text_emits_preview(self) -> None:
+        residual = "這是還沒送出去的草稿"
+        xml = (
+            f'<hierarchy><node resource-id="jp.naver.line.android:id/chat_ui_message_edit" '
+            f'text="{residual}" bounds="[0,0][100,50]" /></hierarchy>'
+        )
+        result = check_input_box_cleared(self._client_with_xml(xml))
+        self.assertEqual(result["status"], "not_cleared")
+        self.assertEqual(result["residual_text"], residual)
+        self.assertEqual(result["residual_length"], len(residual))
+        self.assertIn(residual[:10], result["preview"])
+
+    def test_input_node_missing_returns_unknown(self) -> None:
+        xml = '<hierarchy><node resource-id="other" text="foo" /></hierarchy>'
+        result = check_input_box_cleared(self._client_with_xml(xml))
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["reason"], "input_node_not_found")
 
 
 if __name__ == "__main__":

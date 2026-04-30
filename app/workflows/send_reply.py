@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.adb.client import AdbClient
-from app.adb.input import tap_type_send
+from app.adb.input import check_input_box_cleared, tap_type_send
 from app.core.audit import append_audit_event
 from app.core.send_gate import send_gate
 from app.storage.config_loader import get_device_config, load_community_config, load_risk_control
@@ -26,8 +26,9 @@ def send_draft(
 
     device = get_device_config(device_id)
     wait_meta = send_gate.wait_turn(device.label, f"{customer_id}:{community_id}", risk_control)
+    client = AdbClient(device_id=device_id)
     result = tap_type_send(
-        AdbClient(device_id=device_id),
+        client,
         draft_text,
         input_x=community.input_x,
         input_y=community.input_y,
@@ -43,4 +44,25 @@ def send_draft(
         "gate_wait_seconds": wait_meta["waited_seconds"],
     }
     append_audit_event(customer_id, "send_attempt", payload)
+
+    # Post-send verification: a successful tap doesn't guarantee LINE actually
+    # transmitted. If the input box still has our draft text, LINE swallowed
+    # the send silently. Surface this so the operator can verify before
+    # retrying — accidental double-sends happened on 2026-04-29 16:13.
+    if payload["status"] == "sent":
+        check = check_input_box_cleared(client)
+        if check.get("status") == "not_cleared":
+            append_audit_event(
+                customer_id,
+                "send_attempt_input_box_not_cleared",
+                {
+                    "community_id": community_id,
+                    "device_id": device_id,
+                    "preview": check.get("preview"),
+                    "residual_length": check.get("residual_length"),
+                    "severity": "important",
+                    "action_hint": "上一次送出可能沒成功；確認 LINE 群裡是否實際出現訊息再決定是否重送",
+                },
+            )
+
     return payload

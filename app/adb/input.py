@@ -87,6 +87,51 @@ def tap_type_send(
     }
 
 
+def check_input_box_cleared(client: AdbClient) -> dict[str, object]:
+    """Dump live UI and read the chat_ui_message_edit `text=` attribute.
+
+    Used as a post-send verification: after `send_attempt` reports `sent`, the
+    LINE input box should be empty. Residual text means LINE swallowed our send
+    silently and the operator may double-send if they retry.
+
+    Returns:
+        {"status": "cleared"} when the input is empty.
+        {"status": "not_cleared", "residual_text": "<full>", "preview": "<<=40>"}
+            when text remains.
+        {"status": "unknown", "reason": "..."} when we couldn't determine state
+            (dump failed, node missing). Do NOT treat unknown as a failure —
+            absence of evidence is not evidence of failure.
+    """
+
+    try:
+        client.shell("uiautomator", "dump", "/sdcard/echo_inputcheck_dump.xml")
+        result = client.shell("cat", "/sdcard/echo_inputcheck_dump.xml", check=False)
+    except AdbError as exc:
+        return {"status": "unknown", "reason": f"adb_error:{exc}"}
+    xml = (result.stdout or "") if hasattr(result, "stdout") else ""
+    if not xml:
+        return {"status": "unknown", "reason": "empty_dump"}
+
+    match = re.search(
+        r'<node[^>]*resource-id="jp\.naver\.line\.android:id/chat_ui_message_edit"[^>]*>',
+        xml,
+    )
+    if not match:
+        return {"status": "unknown", "reason": "input_node_not_found"}
+
+    text_match = re.search(r'\stext="([^"]*)"', match.group(0))
+    text = text_match.group(1) if text_match else ""
+    if not text:
+        return {"status": "cleared"}
+    preview = text[:40] + ("…" if len(text) > 40 else "")
+    return {
+        "status": "not_cleared",
+        "residual_text": text,
+        "preview": preview,
+        "residual_length": len(text),
+    }
+
+
 def _resolve_input_and_send(client: AdbClient) -> dict[str, tuple[int, int] | None]:
     """One UI dump that resolves both `chat_ui_message_edit` (input) and
     `chat_ui_send_button_image` (send). Used when caller passed None coords.
