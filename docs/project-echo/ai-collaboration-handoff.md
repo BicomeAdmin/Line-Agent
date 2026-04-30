@@ -1,6 +1,6 @@
 # Project Echo AI Collaboration Handoff
 
-Last updated: 2026-04-29
+Last updated: 2026-04-30
 
 ## Purpose
 
@@ -21,7 +21,7 @@ This is the fastest restart document for another AI collaborator (Claude / Codex
 - LLM brain: `ECHO_LLM_ENABLED=false` (rule-based template still active; subscription LLMs via `claude` / `codex` CLI handle Lark bridge)
 - Lark bridge backend: **Codex** (`codex exec --dangerously-bypass-approvals-and-sandbox`), NOT `claude -p` (AUP false-positive on the LINE-send tool surface — see CLAUDE.md §8)
 
-## Current Live Truth (2026-04-29)
+## Current Live Truth (2026-04-30)
 
 ### Communities (5 active, all calibrated, ready for HIL)
 
@@ -47,11 +47,22 @@ One-shot start/restart/status: `bash scripts/start_services.sh [restart|status]`
 
 ### Test Suite
 
-- **280 / 280 unit tests passing**
+- **689 / 689 unit tests passing**（2026-04-30 跨 8 支 session 整批 land 後）
 - Run: `python3 -m unittest discover -s tests`
-- Last commits added: `test_backup_state` (+3), `test_auto_watch` (+7), `test_event_health_report` (+6)
 
-## Recent Work (2026-04-29 session — 13 commits, 240→280 tests)
+## Recent Work (2026-04-30 — 8 commit cross-session land + P3 essayist linter / near-dup nudge)
+
+詳見 [`change-log.md`](change-log.md) 2026-04-30（下午）entry。一句話：9 層 send-pipeline 防線補齊 + observability stack 上線 + scheduled_post compose_mode/recurrence 上線 + orphan_recovery 上線。
+
+關鍵新模組（resume 後可直接 grep）：
+- `app/workflows/operator_attribution.py` — operator/sender 判定的單一真相
+- `app/workflows/openchat_verify.py` / `send_verification.py` / `bot_pattern_guard.py` / `app/ai/send_safety.py` — send pipeline 防線 3-6, 8
+- `app/workflows/alert_aggregator.py` / `voice_profile_watcher.py` / `app/core/audit_redact.py` / `audit.audit_log_stats` — observability
+- `app/workflows/orphan_recovery.py` — daemon 韌性
+- `app/workflows/scheduled_post_recurrence.py` + `_compose_brand_draft` (job_processor) — Goal 1↔Goal 2 接通
+- `app/ai/prompts/composer_brand_v1.md` + voice_profile v2 fields — brand register
+
+## Earlier Work (2026-04-29 session — 13 commits, 240→280 tests)
 
 ### Identity / Philosophy
 

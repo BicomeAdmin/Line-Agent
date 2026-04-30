@@ -1,6 +1,6 @@
 # Project Echo Workstream Tracker
 
-Last updated: 2026-04-29
+Last updated: 2026-04-30
 
 ## Principles
 
@@ -136,7 +136,57 @@ Open items:
 
 - [ ] refresh `acceptance_status` and `project_snapshot` to recognize chat-export-driven communities (don't say `line_not_openchat` when they're actually live)
 
-### 8. Documentation / Runbooks
+### 8. Send Pipeline 9 層防線
+
+Status: `done` (2026-04-30 land)
+
+Completed:
+
+- Layer 1 HIL gate (`risk_control.yaml`)
+- Layer 2 patrol_community（pre-send navigate）
+- Layer 3 `openchat_verify`（pre-send 驗群一刻）
+- Layer 4 `_check_pre_send_drift`（compose↔approve 漂移）
+- Layer 5 `bot_pattern_guard`（明顯 bot tells）
+- Layer 6 `send_safety`（共用安全檢查）
+- Layer 7 `tap_type_send`（動態送出按鈕 + Bezier）
+- Layer 8 `send_verification`（post-send 驗訊息真在群裡）
+- Layer 9 `check_input_box_cleared`（殘留草稿靜默失敗訊號）
+
+Open items: none active. 9 層全綠後若仍出 false-positive / false-negative，靠 `alert_aggregator` 訊號收斂個別層。
+
+### 9. Observability Stack
+
+Status: `done` (2026-04-30 land)
+
+Completed:
+
+- `alert_aggregator`（severity-tiered，empty-when-quiet）
+- `audit_redact` + `export_audit_redacted`（PII-safe 分享）
+- `audit_log_stats`（50MB warn / 200MB critical）
+- `voice_profile_watcher`（off_limits / nickname drift）
+- `self_detection_health`（24h operator self-ratio 動態 threshold）
+- dashboard alert panel 接線
+
+Open items:
+
+- [ ] dashboard alert panel UX 觀察 1-2 週後可能再迭代（過敏 / 過鈍調整）
+
+### 10. Daemon 韌性
+
+Status: `done` (2026-04-30 land)
+
+Completed:
+
+- `orphan_recovery`（重啟 in-flight review/job 分流：terminal/graceful/operator-domain）
+- `scheduled_post_recurrence`（daily / weekly / monthly schema + auto-spawn）
+- `scheduled_post compose_mode`（brief 取代 text，daemon 在 send_at - lead 跑 codex_compose）
+- `composer_brand_v1.md`（廣播 register，與會話 register 分離）
+
+Open items:
+
+- [ ] compose_mode 推到 005（broadcast-heavy）— 等 004 dry-run 跑出 voice 對得上
+
+### 11. Documentation / Runbooks
 
 Status: `done` (this sync)
 
@@ -158,16 +208,19 @@ Completed:
 Open items:
 
 - [ ] keep all three sync docs (handoff / status / tracker) in step after each significant session — operator's CLAUDE.md §4.2 rule
+- [ ] `architecture-and-usage.md` 已上線（2026-04-30）但需要 1-2 週實戰回饋後再 polish
 
 ## Current Planning Horizon
 
-Now (2026-04-29 → 2026-05-02):
+Now (2026-04-30 → 2026-05-07):
 
-- run T1+T2+T3 in production for 1-2 days
+- 9 層防線 + observability stack burn-in 1-2 週
+- 觀察 alert_aggregator 是否過敏 / 過鈍（important 級事件 / 天 ≤3 是健康）
 - accumulate `edit_feedback` signal across communities
+- 004 compose_mode dry-run（`scripts/dry_run_compose.py`）品質評估
 - monitor scheduler / lark / dashboard logs for anomalies
 
-Next (after edit_feedback signal):
+Next (after burn-in + edit_feedback signal):
 
 - read diff patterns → identify real bottleneck
 - pick next Tier 3 item (OCR fallback / real device / BERTopic / group SOP) **based on signal, not assumption**

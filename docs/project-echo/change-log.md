@@ -4,7 +4,38 @@ This file is the lightweight engineering log for Project Echo.
 
 > 想看「為什麼這樣設計、過程怎麼走過來」的敘事版本，請看 [`growth-log.md`](growth-log.md)。
 
-## 2026-04-30
+## 2026-04-30 （下午）— Cross-session land：8 個邏輯 commit 整批進 master
+
+**Why** — main worktree 2026-04-30 16:50 累積 28 modified + 28 untracked，跨 7-8 支 active session 的 in-flight。操作員明示授權整批接手（feedback_cross_session_ownership 例外條件），由本 session 分組 land + push。每個 commit body 標 `(Cross-session land — original work by parallel session)`，owner session resume 後可 `git commit --amend` 改寫敘事。
+
+**8 個 commit**（origin/master `437367d..0d22c27`，56 檔，~7000 行新增）
+
+| SHA | 組別 | 摘要 |
+|---|---|---|
+| `dd79dd2` | A | Naming sweep — 抽 `app/workflows/operator_attribution.py` 為 operator/sender 判定的單一真相，4 個 workflow（kpi_tracker / lifecycle_tagging / relationship_graph / reply_target_selector）改用 `is_operator_sender` |
+| `7b902e5` | B | Send pipeline 防呆 — `openchat_verify`（送前驗在正確群）+ `send_verification`（送後驗 LINE 真的吃下去，post-send input-box check 的 sibling）+ `bot_pattern_guard`（送前掃 bot tells）+ `send_safety` 共用 helpers |
+| `f2bf554` | C | Observability — `alert_aggregator`（severity-tiered，empty-when-quiet）+ `audit_redact` + `export_audit_redacted`（PII-safe 分享）+ `audit_log_stats`（50MB warn / 200MB critical）+ `voice_profile_watcher`（off_limits / nickname drift 偵測）+ dashboard panel |
+| `bfa65f9` | D | Orphan recovery — daemon 重啟時把 in-flight review/job 分流：terminal-state 不動、graceful 重排（idempotent）、operator-domain 只 audit |
+| `ec4c276` | E | scheduled_post compose_mode + recurrence — Goal 1（broadcasts）↔ Goal 2（voice-aware composer）接通：post 帶 brief 取代固定 text，daemon 在 send_at - lead 跑 `_compose_brand_draft`；recurrence schema (`daily@HH:MM` / `weekly:DOW@HH:MM` / `monthly:N@HH:MM`) auto-spawn 下次 occurrence。compose_mode 永不 auto-send（HIL 不變） |
+| `0b86eff` | F | Composer brand mode + voice_profile v2 — `composer_brand_v1.md` 廣播 register（與會話 register `composer_v1` 分離）+ voice_profile structured fields（value_proposition / route_mix / stage / engagement_appetite）+ off_limits drift test |
+| `5580433` | G | line_chat_parser 強化 — onboarding SOP §7-bis sender 規則：`chat_ui_row_sender` 為 source of truth、ignore reply quote box、x-bounds detect operator 自身泡 |
+| `0d22c27` | H | Misc — `reviews.py` cross-process read-through、MCP server tool surface 對齊 A-G、watch_tick 接線、+ `architecture-and-usage.md`（30 秒 9 層防線地圖，CLAUDE.md 從首段 link 入） |
+
+**Validated**
+- Phase 0 baseline 678 tests 綠 → 8 commit 後 678 綠 → rebase origin/master（吸收 P3 兩個 commit）後 689/689 綠
+- Rebase 0 衝突
+- `git push origin master` 走 hooks，無 force / 無 bypass
+
+**Cross-session 互鎖記錄**
+- Group B 的 `_check_pre_send_drift` 邏輯併入 Group E `ec4c276` 的 `job_processor.py`（與 `_compose_brand_draft` 在同函式內 hunk 互鎖，分不開）
+- Group D 的 `scheduler.py` 接線併入 Group E `ec4c276`（單檔僅 +3 行 compose_mode pass-through，不另切組）
+
+**對既有系統影響**
+- 9 層防線（見 architecture-and-usage.md）原文紀錄 7 層 → 此次 land 後接近 9 層完整：openchat_verify (pre-send) + send_verification (post-send) + bot_pattern_guard 補上 send-path 防護；alert_aggregator + voice_profile_watcher + audit_log_stats 補上觀察層；orphan_recovery 補上 daemon 韌性
+- HIL 鐵則 / require_human_approval / risk_control.yaml 全未動
+- Production data（fingerprints / lifecycle / audit JSONL）未動
+
+---
 
 ### Post-send input-box check：偵測 LINE 靜默送出失敗
 
