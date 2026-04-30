@@ -121,6 +121,7 @@ def select_reply_target(
     member_fingerprints: dict | None = None,  # the bundle from load_member_fingerprints
     threshold: float | None = None,
     lifecycle_tags: dict | None = None,  # bundle from load_lifecycle_tags
+    now_epoch: float | None = None,
 ) -> TargetDecision:
     """Pick the most reply-worthy message in `messages` (chronological,
     oldest first). messages: list of {sender, text, position}.
@@ -134,6 +135,15 @@ def select_reply_target(
     threshold = threshold if threshold is not None else _reply_threshold()
     if not messages:
         return TargetDecision(target=None, threshold=threshold, all_scored=[], skip_reason="no_messages")
+
+    import time as _time
+    current_epoch = now_epoch if now_epoch is not None else _time.time()
+    # Staleness gate is enabled only when the batch carries timestamps
+    # at all. chat_export imports + legacy fixtures arrive without
+    # ts_epoch — gating those would zero everything out. Production
+    # `read_recent_chat` always extracts timestamps from row_timestamp
+    # nodes, so this auto-engages in real flows.
+    has_any_ts = any(isinstance(m.get("ts_epoch"), (int, float)) for m in messages)
 
     operator_nickname = ""
     operator_aliases: tuple[str, ...] = ()
@@ -335,11 +345,42 @@ def select_reply_target(
                 score += 1.5
                 reasons.append(f"topic_overlap_kw:+1.5({'/'.join(list(overlap)[:3])})")
 
-        # Recency decay: messages further back lose weight.
+        # Recency decay: messages further back lose weight (position-based,
+        # within the visible window).
         recency_factor = max(0.0, 1.0 - (n - 1 - i) / 20.0)
         score *= recency_factor
         if recency_factor < 1.0:
             reasons.append(f"recency_x{recency_factor:.2f}")
+
+        # Wall-clock staleness gate (Layer 2). Only engages when the
+        # batch carries timestamps; pure-import flows skip the gate.
+        # @-mention exception: those already get +5.0 and survive a
+        # -2.5 penalty; we penalize but don't hard-disqualify so an
+        # explicit ping doesn't fall through the cracks.
+        if has_any_ts:
+            ts_epoch = msg.get("ts_epoch")
+            is_at_mention = any(r.startswith("mentions_operator:") for r in reasons)
+            if isinstance(ts_epoch, (int, float)):
+                staleness_minutes = (current_epoch - float(ts_epoch)) / 60.0
+                if staleness_minutes > 180:  # >3h
+                    if is_at_mention:
+                        score -= 2.5
+                        reasons.append(f"stale_at_mention:-2.5({int(staleness_minutes)}min)")
+                    else:
+                        score = 0.0
+                        reasons.append(f"stale_disqualify({int(staleness_minutes)}min)")
+                elif staleness_minutes > 60:  # 1-3h
+                    score -= 2.0
+                    reasons.append(f"stale_1to3h:-2.0({int(staleness_minutes)}min)")
+                elif staleness_minutes > 30:  # 30-60min
+                    score -= 0.5
+                    reasons.append(f"stale_30to60m:-0.5({int(staleness_minutes)}min)")
+            else:
+                # In a timestamped batch but THIS message has no ts —
+                # parser y-pairing failed. Penalize like 1-3h old.
+                if not is_at_mention:
+                    score -= 2.0
+                    reasons.append("stale_unknown_age:-2.0")
 
         candidates.append(TargetCandidate(index=i, sender=sender, text=text, score=round(score, 2), reasons=reasons))
 
@@ -419,36 +460,11 @@ def _operator_was_in_recent(messages: Sequence[dict], idx: int, operator_names: 
     return False
 
 
-def _operator_name_set(nickname: str, aliases: tuple[str, ...]) -> set[str]:
-    """Build the canonical set of operator-identifying names. Includes the
-    primary nickname plus any aliases declared on the community config.
-    Empty strings are dropped so we don't degenerate to "match everything"."""
-
-    names: set[str] = set()
-    if nickname:
-        names.add(nickname.strip())
-    for a in aliases:
-        s = (a or "").strip()
-        if s:
-            names.add(s)
-    return {n for n in names if n}
-
-
-def _is_operator_message(msg: dict, operator_names: set[str]) -> bool:
-    """A message belongs to the operator if any of:
-      - is_self flag set by the live LINE UI parser
-      - synthetic __operator__ sentinel
-      - sender contains any operator-identifying name (substring match,
-        so 「比利 本尊」 matches nickname 「比利」 etc.)"""
-
-    if msg.get("is_self"):
-        return True
-    sender = str(msg.get("sender") or "")
-    if sender == "__operator__":
-        return True
-    if not sender:
-        return False
-    for name in operator_names:
-        if name and name in sender:
-            return True
-    return False
+# Operator-attribution helpers live in `app.workflows.operator_attribution`
+# now (single source of truth across selector / lifecycle / KPI /
+# relationship_graph). These local names are kept as thin re-exports
+# so existing tests / external callers don't break.
+from app.workflows.operator_attribution import (
+    is_operator_message as _is_operator_message,
+    operator_name_set as _operator_name_set,
+)

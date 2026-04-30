@@ -37,7 +37,10 @@ def _export(lines: list[tuple[str, str, str]]) -> str:
     return "\n".join(out) + "\n"
 
 
-def _fake_community(operator_nickname: str | None = None) -> CommunityConfig:
+def _fake_community(
+    operator_nickname: str | None = None,
+    operator_aliases: tuple[str, ...] = (),
+) -> CommunityConfig:
     return CommunityConfig(
         customer_id="customer_a",
         community_id="openchat_test",
@@ -46,6 +49,7 @@ def _fake_community(operator_nickname: str | None = None) -> CommunityConfig:
         device_id="emulator-5554",
         patrol_interval_minutes=60,
         operator_nickname=operator_nickname,
+        operator_aliases=operator_aliases,
     )
 
 
@@ -190,6 +194,46 @@ class ComputeLifecycleTagsTests(unittest.TestCase):
         self.assertEqual(dist.get("active"), 1)
         self.assertEqual(dist.get("churned"), 1)
         self.assertEqual(snap["total_distinct_members"], 3)
+
+
+class OperatorAliasFilteringTests(unittest.TestCase):
+    """Regression for #8 fingerprint contamination — operator's aliased
+    name (e.g. '阿樂 本尊' with role badge) must be classified as
+    'operator', not as a regular member."""
+
+    def _stage_of(self, snap: dict, sender: str) -> str | None:
+        for m in snap["members"]:
+            if m["sender"] == sender:
+                return m["stage"]
+        return None
+
+    def test_aliased_operator_classified_as_operator(self) -> None:
+        community = _fake_community(
+            operator_nickname="阿樂2",
+            operator_aliases=("阿樂 本尊",),
+        )
+        export = _export([
+            ("2026-04-26", "10:00", "阿樂 本尊 嗨大家好"),
+            ("2026-04-26", "10:00", "阿樂 本尊 又一句"),
+            ("2026-04-26", "10:01", "alice 嗨"),
+        ])
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            export_path = Path(tmp_dir) / "export.txt"
+            export_path.write_text(export, encoding="utf-8")
+            data_root = Path(tmp_dir) / "data"
+            with patch.object(lt, "load_community_config", lambda *_: community), \
+                 patch.object(lt, "latest_export_path", lambda *_: export_path), \
+                 patch.object(lt, "customer_data_root", lambda *_: data_root), \
+                 patch.object(lt, "append_audit_event", lambda *a, **k: None):
+                snap = lt.compute_lifecycle_tags(
+                    "customer_a", "openchat_test", reference_date=REF_DATE,
+                )
+
+        # Aliased operator → "operator" stage, not "active"/"new"
+        self.assertEqual(self._stage_of(snap, "阿樂 本尊"), "operator")
+        # Regular member is still classified normally
+        self.assertEqual(self._stage_of(snap, "alice"), "new")
 
 
 if __name__ == "__main__":

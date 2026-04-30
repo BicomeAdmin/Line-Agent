@@ -99,7 +99,13 @@ def build_relationship_graph(
     except ImportError:
         return {"status": "error", "reason": "networkx_not_installed"}
 
-    operator_nick = (community.operator_nickname or "").strip()
+    # Aliases-aware operator filter (was nickname-only — caused operator's
+    # aliased name like "阿樂 本尊" to be ranked as a top KOC of itself).
+    from app.workflows.operator_attribution import (
+        is_operator_sender,
+        operator_names_for_community,
+    )
+    operator_names = operator_names_for_community(community)
 
     g = nx.DiGraph()
 
@@ -166,7 +172,7 @@ def build_relationship_graph(
     # in-degree both matter; out-degree is a secondary engagement signal.
     nodes_scored: list[dict[str, object]] = []
     for node in g.nodes():
-        if node == operator_nick or node == "__operator__":
+        if is_operator_sender(node, operator_names):
             continue
         if _is_system_sender(node):
             continue

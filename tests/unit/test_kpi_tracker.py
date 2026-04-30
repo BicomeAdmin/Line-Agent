@@ -21,7 +21,10 @@ def _msg(sender: str, text: str, date: str = "2026-04-28", time: str = "10:00") 
     return ChatMessage(date=date, time=time, sender=sender, text=text)
 
 
-def _fake_community(operator_nickname: str | None = None) -> CommunityConfig:
+def _fake_community(
+    operator_nickname: str | None = None,
+    operator_aliases: tuple[str, ...] = (),
+) -> CommunityConfig:
     return CommunityConfig(
         customer_id="customer_a",
         community_id="openchat_test",
@@ -30,6 +33,7 @@ def _fake_community(operator_nickname: str | None = None) -> CommunityConfig:
         device_id="emulator-5554",
         patrol_interval_minutes=60,
         operator_nickname=operator_nickname,
+        operator_aliases=operator_aliases,
     )
 
 
@@ -78,6 +82,25 @@ class ComputeSingleDayTests(unittest.TestCase):
         items = [_msg("__operator__", "system-driven"), _msg("alice", "user")]
         out = kt._compute_single_day("2026-04-28", items, "比利")
         self.assertEqual(out["operator_messages"], 1)
+
+    def test_aliased_operator_counted_via_alias_set(self):
+        """Regression for #8: KPI must honor operator_aliases. Without
+        the aliases-aware op_names, '阿樂 本尊' would be counted as a
+        member, inflating distinct_active and undercounting operator_msgs."""
+        items = [
+            _msg("阿樂 本尊", "操作員自言自語"),
+            _msg("阿樂 本尊", "又一句"),
+            _msg("alice", "members"),
+        ]
+        out = kt._compute_single_day(
+            "2026-04-28", items, "阿樂2",
+            operator_names={"阿樂2", "阿樂 本尊"},
+        )
+        # Operator caught despite different name
+        self.assertEqual(out["operator_messages"], 2)
+        # And NOT counted as an active member
+        self.assertEqual(out["distinct_active_senders"], 1)
+        self.assertEqual(set(out["active_senders_list"]), {"alice"})
 
     def test_broadcast_vs_natural_split(self):
         items = [
@@ -161,6 +184,38 @@ class ComputeCommunityKpisTests(unittest.TestCase):
             snap = kt.compute_community_kpis("customer_a", "openchat_test")
         self.assertEqual(snap["status"], "error")
         self.assertEqual(snap["reason"], "no_export_available")
+
+
+class HealthBandTests(unittest.TestCase):
+    """Paul《私域流量》九宮格 stage thresholds → traffic-light bands."""
+
+    def test_quiet_below_5_per_day(self) -> None:
+        from app.workflows.kpi_tracker import health_band_for_avg_daily
+        self.assertEqual(health_band_for_avg_daily(0)[0], "quiet")
+        self.assertEqual(health_band_for_avg_daily(4.9)[0], "quiet")
+
+    def test_cool_5_to_15(self) -> None:
+        from app.workflows.kpi_tracker import health_band_for_avg_daily
+        self.assertEqual(health_band_for_avg_daily(5)[0], "cool")
+        self.assertEqual(health_band_for_avg_daily(14.9)[0], "cool")
+
+    def test_warm_15_to_50(self) -> None:
+        from app.workflows.kpi_tracker import health_band_for_avg_daily
+        self.assertEqual(health_band_for_avg_daily(15)[0], "warm")
+        self.assertEqual(health_band_for_avg_daily(49.9)[0], "warm")
+
+    def test_hot_at_50(self) -> None:
+        from app.workflows.kpi_tracker import health_band_for_avg_daily
+        # Paul: 50-100 daily UGC = 活躍→裂變 transition
+        self.assertEqual(health_band_for_avg_daily(50)[0], "hot")
+        self.assertEqual(health_band_for_avg_daily(200)[0], "hot")
+
+    def test_zh_label_returned(self) -> None:
+        from app.workflows.kpi_tracker import health_band_for_avg_daily
+        self.assertEqual(health_band_for_avg_daily(3)[1], "沉寂")
+        self.assertEqual(health_band_for_avg_daily(10)[1], "偏冷")
+        self.assertEqual(health_band_for_avg_daily(30)[1], "活躍")
+        self.assertEqual(health_band_for_avg_daily(100)[1], "熱絡")
 
 
 class KpiSnapshotsPathTests(unittest.TestCase):

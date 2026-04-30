@@ -78,6 +78,14 @@ def compute_community_kpis(
         return {"status": "error", "reason": f"parse_failed:{exc}"}
 
     operator_nickname = (community.operator_nickname or "").strip()
+    # Aliases-aware operator filter — was nickname-only, which under-counted
+    # operator_msgs and over-counted distinct_active when the operator's
+    # chat-export sender carried a role badge (e.g. "阿樂 本尊").
+    from app.workflows.operator_attribution import (
+        is_operator_sender,
+        operator_names_for_community,
+    )
+    operator_names = operator_names_for_community(community)
 
     # Group messages by date
     by_date: dict[str, list[ChatMessage]] = {}
@@ -98,7 +106,7 @@ def compute_community_kpis(
             continue
         if d < cutoff:
             continue
-        daily.append(_compute_single_day(date_str, items, operator_nickname))
+        daily.append(_compute_single_day(date_str, items, operator_nickname, operator_names))
 
     # Aggregate trends
     n_recent_7 = sum(d["message_count"] for d in daily[-7:])
@@ -151,18 +159,27 @@ def _compute_single_day(
     date_str: str,
     items: list[ChatMessage],
     operator_nickname: str,
+    operator_names: set[str] | None = None,
 ) -> dict[str, object]:
-    """KPIs for one day."""
+    """KPIs for one day. `operator_names` is the aliases-aware set used
+    to filter operator-attributable messages from member activity."""
 
-    senders = Counter(m.sender for m in items if m.sender and m.sender != "unknown")
+    from app.workflows.operator_attribution import is_operator_sender
+    op_names = operator_names if operator_names is not None else (
+        {operator_nickname} if operator_nickname else set()
+    )
+
+    # Distinct ACTIVE members exclude the operator — they're not a member.
+    member_senders = [
+        s for s in (m.sender for m in items if m.sender and m.sender != "unknown")
+        if not is_operator_sender(s, op_names)
+    ]
+    senders = Counter(member_senders)
     active_senders_list = sorted(senders.keys())
     distinct_active = len(active_senders_list)
 
-    # Operator participation
-    operator_msgs = 0
-    if operator_nickname:
-        operator_msgs = sum(1 for m in items if m.sender == operator_nickname)
-    operator_msgs += sum(1 for m in items if m.sender == "__operator__")
+    # Operator participation — use aliases-aware filter
+    operator_msgs = sum(1 for m in items if is_operator_sender(m.sender, op_names))
 
     # Broadcast vs natural
     broadcast_count = sum(1 for m in items if _looks_broadcast(m.text))
@@ -200,6 +217,28 @@ def _looks_broadcast(text: str) -> bool:
 # Cross-community summary for dashboard / Lark digest
 # ──────────────────────────────────────────────────────────────────────
 
+def health_band_for_avg_daily(avg_daily_messages: float) -> tuple[str, str]:
+    """Map daily message volume to a health band aligned with Paul's
+    《私域流量》 stage transitions.
+
+    Bands and rationale (CLAUDE.md §0.5.2):
+      - quiet  (<5/day):   below noise floor; 留存階段未過關
+      - cool   (5-14/day): 留存中, 還沒到活躍
+      - warm   (15-49/day): 活躍中
+      - hot    (>=50/day):  Paul 的 UGC 50-100 條基準, 接近裂變
+
+    Returns (band_code, zh_label).
+    """
+
+    if avg_daily_messages < 5:
+        return ("quiet", "沉寂")
+    if avg_daily_messages < 15:
+        return ("cool", "偏冷")
+    if avg_daily_messages < 50:
+        return ("warm", "活躍")
+    return ("hot", "熱絡")
+
+
 def kpi_summary_for_dashboard(customer_id: str = "customer_a") -> dict[str, object]:
     """Light-weight KPI summary for ALL communities of a customer.
     Reads the persisted snapshot files (no recompute) so the dashboard
@@ -231,14 +270,18 @@ def kpi_summary_for_dashboard(customer_id: str = "customer_a") -> dict[str, obje
                 "snapshot_present": False,
             })
             continue
+        avg_daily = float(data.get("avg_daily_messages", 0) or 0)
+        band_code, band_label = health_band_for_avg_daily(avg_daily)
         rows.append({
             "community_id": c.community_id,
             "display_name": c.display_name,
             "snapshot_present": True,
             "messages_last_7_days": data.get("messages_last_7_days", 0),
             "weekly_active_senders": data.get("weekly_active_senders", 0),
-            "avg_daily_messages": data.get("avg_daily_messages", 0),
+            "avg_daily_messages": avg_daily,
             "computed_at_taipei": data.get("computed_at_taipei"),
+            "health_band": band_code,
+            "health_band_zh": band_label,
         })
 
     rows.sort(key=lambda r: r["community_id"])

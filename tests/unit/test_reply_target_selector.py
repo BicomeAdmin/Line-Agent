@@ -6,8 +6,11 @@ import unittest
 from app.workflows.reply_target_selector import select_reply_target
 
 
-def _msg(sender, text, position=0):
-    return {"sender": sender, "text": text, "position": position}
+def _msg(sender, text, position=0, ts_epoch=None):
+    out = {"sender": sender, "text": text, "position": position}
+    if ts_epoch is not None:
+        out["ts_epoch"] = ts_epoch
+    return out
 
 
 def _persona(nickname, recent_texts=None, aliases=None):
@@ -368,6 +371,91 @@ class OperatorAliasFilterTests(unittest.TestCase):
         d = select_reply_target(msgs, operator_persona=_persona("阿樂"))
         if d.target is not None:
             self.assertNotEqual(d.target.sender, "阿樂")
+
+
+class StalenessGateTests(unittest.TestCase):
+    """Layer 2: time-based staleness gate. Engages only when the
+    batch carries timestamps; chat_export imports without ts_epoch
+    skip the gate (legacy/historic flow)."""
+
+    def test_stale_disqualifies_above_3h(self):
+        now = 1_700_000_000.0
+        msgs = [
+            _msg("Alice", "JN3 是要填到什麼時候啊", position=0, ts_epoch=now - 200 * 60),  # 3h20m
+            _msg("Bob", "嗨大家好", position=1, ts_epoch=now - 5 * 60),  # fresh but bland
+        ]
+        d = select_reply_target(
+            msgs,
+            operator_persona=_persona("阿樂", recent_texts=["JN3 我也還沒填欸"]),
+            now_epoch=now,
+        )
+        # Old question would have scored ~5 → disqualified to 0
+        # Fresh bland message scores low → no actionable target
+        if d.target is not None:
+            self.assertNotEqual(d.target.sender, "Alice")
+            self.assertNotIn("JN3", d.target.text)
+
+    def test_at_mention_survives_staleness_with_penalty(self):
+        # @-mention to operator from 4h ago: penalized but not zeroed
+        now = 1_700_000_000.0
+        msgs = [
+            _msg("Alice", "聊聊", position=0, ts_epoch=now - 10 * 60),
+            _msg("Bob", "@阿樂 你看一下", position=1, ts_epoch=now - 240 * 60),  # 4h ago
+        ]
+        d = select_reply_target(msgs, operator_persona=_persona("阿樂"), now_epoch=now)
+        # Bob's @-mention had +5.0; -2.5 stale penalty → 2.5, still > threshold 2.0
+        self.assertIsNotNone(d.target)
+        self.assertEqual(d.target.sender, "Bob")
+        self.assertTrue(any("stale_at_mention" in r for r in d.target.reasons))
+
+    def test_1to3h_penalty_pushes_marginal_below_threshold(self):
+        now = 1_700_000_000.0
+        msgs = [
+            # Question + after_operator → ~6, but at 90min ago, -2.0 → 4.0 still actionable
+            _msg("阿樂", "我覺得這樣不錯", position=0, ts_epoch=now - 100 * 60),
+            _msg("Alice", "想問大家", position=1, ts_epoch=now - 90 * 60),
+        ]
+        d = select_reply_target(msgs, operator_persona=_persona("阿樂"), now_epoch=now)
+        # Alice's score reduced by -2.0 stale_1to3h penalty
+        if d.target is not None and d.target.sender == "Alice":
+            self.assertTrue(any("stale_1to3h" in r for r in d.target.reasons))
+
+    def test_30to60min_minor_penalty(self):
+        now = 1_700_000_000.0
+        msgs = [
+            _msg("阿樂", "我覺得這樣不錯", position=0, ts_epoch=now - 50 * 60),
+            _msg("Alice", "請問大家有看到嗎", position=1, ts_epoch=now - 45 * 60),
+        ]
+        d = select_reply_target(msgs, operator_persona=_persona("阿樂"), now_epoch=now)
+        # 30-60min range → -0.5 penalty
+        if d.target is not None and d.target.sender == "Alice":
+            self.assertTrue(any("stale_30to60m" in r for r in d.target.reasons))
+
+    def test_unknown_age_in_timestamped_batch_penalized(self):
+        # If at least one msg has ts_epoch but a particular one doesn't,
+        # the timestampless one gets -2.0 (parser y-pairing failure).
+        now = 1_700_000_000.0
+        msgs = [
+            _msg("Alice", "請問大家有看到嗎", position=0),  # no ts
+            _msg("Bob", "聊個天", position=1, ts_epoch=now - 5 * 60),
+        ]
+        d = select_reply_target(msgs, operator_persona=_persona("阿樂"), now_epoch=now)
+        # Alice would normally score for question, but stale_unknown_age -2.0
+        if d.target is not None and d.target.sender == "Alice":
+            self.assertTrue(any("stale_unknown_age" in r for r in d.target.reasons))
+
+    def test_no_timestamps_in_batch_skips_gate(self):
+        # Backward compat: chat_export imports without any ts_epoch
+        # skip the staleness gate entirely so historic data still scores.
+        msgs = [
+            _msg("阿樂", "我也還沒填", position=0),
+            _msg("Alice", "JN3 是要填到什麼時候啊", position=1),
+        ]
+        d = select_reply_target(msgs, operator_persona=_persona("阿樂"))
+        self.assertIsNotNone(d.target)
+        self.assertEqual(d.target.sender, "Alice")
+        # No staleness reasons present
+        self.assertFalse(any("stale_" in r for r in d.target.reasons))
 
 
 if __name__ == "__main__":

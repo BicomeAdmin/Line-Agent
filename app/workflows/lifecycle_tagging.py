@@ -76,7 +76,15 @@ def compute_lifecycle_tags(
         return {"status": "error", "reason": f"parse_failed:{exc}"}
 
     now = (reference_date or datetime.now(TAIPEI)).date()
-    operator_nick = (community.operator_nickname or "").strip()
+    # Operator-attribution must include aliases (e.g. "阿樂 本尊"
+    # appended badge), not just the bare operator_nickname. Otherwise
+    # the operator's own messages get tagged as member activity and
+    # poison the stage distribution + KPI counts.
+    from app.workflows.operator_attribution import (
+        is_operator_sender,
+        operator_names_for_community,
+    )
+    operator_names = operator_names_for_community(community)
 
     # Per-sender: first_seen_date, last_seen_date, message_count
     by_sender: dict[str, dict[str, object]] = defaultdict(
@@ -108,7 +116,7 @@ def compute_lifecycle_tags(
         days_since_last = (now - last_seen).days if last_seen else None
 
         # Stage classification
-        if sender == operator_nick or sender == "__operator__":
+        if is_operator_sender(sender, operator_names):
             stage = "operator"  # special category
         elif days_since_last is None:
             stage = "unknown"
