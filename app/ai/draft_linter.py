@@ -63,6 +63,31 @@ FORBIDDEN_PHRASES = (
 # Soft warnings — used as opener checks (start of draft)
 SOFT_WARN_OPENERS = ("收到", "已收到", "感謝您")
 
+# 對比反思句式 — essayist / coach register that leaks "this isn't a peer,
+# this is a thinker writing aphorisms". Each pair must co-occur within a
+# short window to count, so single uses of "不是" / "而是" don't false-fire.
+# 2026-04-29 incident: composer produced "感覺不是把心壓安靜，比較像先讓
+# 身體知道可以慢慢鬆下來" — operator ignored, lint scored 100/natural.
+# See memory/feedback_essayistic_register.md.
+# NOTE: ("不是", "而是") is intentionally excluded — it's a common everyday
+# chat pattern ("不是只有他，而是大家都這樣") not specific to essayist
+# register. The leak signal is "比較像" — that phrase is nearly absent from
+# casual peer chat and almost always signals reflective/coaching writing.
+ESSAYISTIC_PAIRS: tuple[tuple[str, str], ...] = (
+    ("不是", "比較像"),
+    ("不像是", "比較像"),
+    ("不像", "比較像"),
+    ("與其說", "倒不如"),
+    ("與其說", "不如"),
+)
+
+# Single-token essayist markers (文藝對比連接詞 — uncommon enough alone to
+# justify hard flagging without a pair).
+ESSAYISTIC_SOLO: tuple[str, ...] = (
+    "倒不如說",
+    "反而像是",
+)
+
 ANNOUNCE_PATTERNS = (
     re.compile(r"^\s*[一二三四五六七八九十\d]+[、.)）]\s"),  # numbered list
     re.compile(r"^\s*[\-•▪️·]\s"),                           # bulleted list
@@ -163,6 +188,34 @@ def score_draft(text: str) -> DraftLintResult:
     elif len(cleaned) > 60:
         score -= 5
 
+    # 5b. Essayistic / coach register (對比反思句式)
+    # Detect contrastive-reflection structures that leak "small editor
+    # writing aphorisms" rather than "peer chatting in a chat group".
+    # Pairs must co-occur within ~20 chars (same sentence-ish window) so
+    # casual single uses of 不是 / 而是 don't mis-fire.
+    essay_hits: list[str] = []
+    for first, second in ESSAYISTIC_PAIRS:
+        idx = cleaned.find(first)
+        while idx != -1:
+            window = cleaned[idx : idx + len(first) + 20]
+            if second in window[len(first) :]:
+                essay_hits.append(f"{first}…{second}")
+                break
+            idx = cleaned.find(first, idx + 1)
+    for solo in ESSAYISTIC_SOLO:
+        if solo in cleaned:
+            essay_hits.append(solo)
+    if essay_hits:
+        # Heavy deduction: a single hit must push score below the watch_tick
+        # lint gate (60) on its own, otherwise this layer can't actually
+        # block the 2026-04-29 leak case (which scored 100/natural before).
+        score -= 45 * len(essay_hits)
+        issues.append(f"觸發散文／教練腔對比反思句式：{essay_hits}")
+        suggestions.append(
+            "刪掉「不是 X 比較像 Y / 不是 X 而是 Y / 與其說…倒不如」這類對比，"
+            "改成單方向陳述 + 第一人稱 ack（這是同儕 chat，不是寫散文）"
+        )
+
     # 6. Announce / list patterns
     has_announce = any(any(p.match(line) for p in ANNOUNCE_PATTERNS) for line in cleaned.splitlines())
     if has_announce:
@@ -201,6 +254,7 @@ def score_draft(text: str) -> DraftLintResult:
         "starts_banned": any(cleaned.startswith(o) for o in BANNED_OPENERS),
         "forbidden_phrase_hits": forbidden_hits,
         "has_list_or_heading": has_announce,
+        "essayistic_hits": essay_hits,
         "emoji_count": emoji_count,
     }
 
