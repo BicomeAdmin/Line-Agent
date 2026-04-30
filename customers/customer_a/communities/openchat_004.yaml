@@ -10,7 +10,7 @@ input_x: null
 input_y: null
 send_x: null
 send_y: null
-operator_nickname: "妍"
+operator_nickname: "翊"
 # Codex composer enabled 2026-04-29 (voice_profile complete, dry-run validated 100/100).
 llm_compose_enabled: true
 auto_watch:

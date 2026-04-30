@@ -75,7 +75,7 @@ Paul 的書讀完，給了我幾個刻在系統根部的觀念：
 
 ### 路上的小頓悟
 
-1. **「連自己是誰都不知道」** — 這個質問我接住的方式：把 operator_nickname 變成 first-class config，每社群一個 YAML 欄位。比利 / 阿樂2 / 愛莎 / 妍 / Eric_營運 寫進 5 個社群配置。從那一刻起，bot 知道「我是誰」。
+1. **「連自己是誰都不知道」** — 這個質問我接住的方式：把 operator_nickname 變成 first-class config，每社群一個 YAML 欄位。比利 / 阿樂2 / 愛莎 / 翊 / Eric_營運 寫進 5 個社群配置。從那一刻起，bot 知道「我是誰」。
 
 2. **Parser 認錯了「自己」** — 我以為 `chat_ui_message_text` 是操作員的右側泡，全錯。它其實是任何人的訊息。真正辨認 self 要看 `chat_ui_row_sender`（每則訊息底下的小名牌）+ x-bounds。修完後，自主流程才真的能跑——之前所有訊息都被誤判成 SELF，selector 完全失靈。
 

@@ -19,7 +19,7 @@ Last updated: 2026-04-29
 - `set_operator_nickname` — per-community 「以「<暱稱>」加入聊天」 identity (mandatory, autonomy breaks without it)
 - `start_watch` (manual) + `auto_watch` (per-community opt-in, daily 10:00-22:00 TPE)
 - `watch_tick` → `select_reply_target` → `compose` → review_card to Lark → operator approve/edit/ignore → `send_draft`
-- All 5 communities (`openchat_001`-`005`) calibrated with operator_nickname (比利 / 阿樂2 / 愛莎 / 妍 / Eric_營運), member fingerprints, KPI snapshots, lifecycle tags, relationship graphs
+- All 5 communities (`openchat_001`-`005`) calibrated with operator_nickname (比利 / 阿樂2 / 愛莎 / 翊 / Eric_營運), member fingerprints, KPI snapshots, lifecycle tags, relationship graphs
 
 ### 2. AI / Decisioning (Tier 1+2 landed 2026-04-29)
 

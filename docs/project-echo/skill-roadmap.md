@@ -11,7 +11,7 @@
 ### 已扎實 ✅
 - HIL 鐵則（review_store + Lark 卡片，操作員逐則點通過）
 - 5 個社群 onboarded：001 愛美星 / 002 特殊支援群 / 003 山納百景 / 004 水月觀音道場 / 005 Bicome 私域顧問
-- operator_nickname 全部設好（比利 / 阿樂2 / 愛莎 / 妍 / Eric_營運）
+- operator_nickname 全部設好（比利 / 阿樂2 / 愛莎 / 翊 / Eric_營運）
 - chat_export_import 五個社群完成（從 LINE .txt → voice profile + member_fingerprint）
 - Watcher Phase 2 自主流程（persona → select_target → fingerprint → compose）
 - 活動時段 gate（10:00-22:00 TPE）

@@ -30,7 +30,7 @@ This is the fastest restart document for another AI collaborator (Claude / Codex
 | `openchat_001` | 愛美星 Cfans俱樂部 (570 人) | 比利 | Production fan community |
 | `openchat_002` | 特殊支援群 (74 人) | 阿樂2 | Test community |
 | `openchat_003` | 山納百景 - 潔納者聯盟 | 愛莎 | Auto-onboarded; KOC top: 許芳旋 (eigen 0.72) |
-| `openchat_004` | (configured) | 妍 | KOC top: Kevin / 巧克力泡芙 / 小麻雀 |
+| `openchat_004` | (configured) | 翊 | KOC top: Kevin / 巧克力泡芙 / 小麻雀 |
 | `openchat_005` | Bicome，您的私域顧問 | Eric_營運 | Broadcast-heavy pattern |
 
 All 5 have: chat_export imported with sender attribution, member fingerprints (11+ stylometric dims), KPI snapshots, lifecycle tags (new/active/silent/churned), relationship graph + KOC candidates.
