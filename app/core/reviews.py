@@ -14,6 +14,13 @@ ACTIVE_REVIEW_STATUSES = {"pending", "edit_required", "pending_reapproval"}
 # status is an audit-trail marker, not a guarantee the message is gone.
 TERMINAL_REVIEW_STATUSES = {"sent", "ignored", "recalled"}
 
+# How recent a sent draft must be to count as a near-duplicate. A re-compose
+# triggered by an operator UI hiccup can land seconds-to-minutes after the
+# original; beyond ~10 min the operator likely meant a deliberate repost.
+# 2026-04-29: byte-identical content went out 2-3 times within 7 min after
+# operator re-triggered after a UI flicker. The check is informational only.
+NEAR_DUPLICATE_WINDOW_MINUTES = 10
+
 
 @dataclass
 class ReviewRecord:
@@ -173,6 +180,42 @@ class ReviewStore:
             self._loaded_mtime = self._state_path.stat().st_mtime
         except OSError:
             self._loaded_mtime = 0.0
+
+
+def find_recent_duplicate_send(
+    community_id: str,
+    draft_text: str,
+    *,
+    store: ReviewStore | None = None,
+    now: float | None = None,
+    window_minutes: int = NEAR_DUPLICATE_WINDOW_MINUTES,
+) -> ReviewRecord | None:
+    """Return the most recent already-sent review with byte-identical
+    draft_text in the same community within `window_minutes`, else None.
+
+    Read-only; never mutates store. Used by mcp_compose to nudge the
+    operator before staging a re-compose that exactly matches something
+    just sent. Operator can still approve — this is informational.
+    """
+
+    target = (draft_text or "").strip()
+    if not target:
+        return None
+    backing = store if store is not None else review_store
+    cutoff = (now if now is not None else time.time()) - window_minutes * 60
+    best: ReviewRecord | None = None
+    for record in backing.list_all():
+        if record.community_id != community_id:
+            continue
+        if record.status != "sent":
+            continue
+        if record.updated_at < cutoff:
+            continue
+        if (record.draft_text or "").strip() != target:
+            continue
+        if best is None or record.updated_at > best.updated_at:
+            best = record
+    return best
 
 
 def normalize_review_status(status: str) -> str:
