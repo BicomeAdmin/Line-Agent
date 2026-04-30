@@ -139,6 +139,112 @@ class VoiceProfileV2Tests(unittest.TestCase):
         self.assertAlmostEqual(total, 1.0, places=3)
 
 
+class TightenedPlaceholderDetectionTests(unittest.TestCase):
+    """Operators leave TODO/FIXME/empty stubs when bootstrapping —
+    these used to slip past is_complete and feed garbage to the LLM."""
+
+    def _profile(self, body: str) -> Path:
+        return _write(f"""
+            ---
+            value_proposition: x
+            route_mix:
+              ip: 1
+              interest: 0
+              info: 0
+            stage: 留存
+            ---
+            {body}
+            """)
+
+    def test_TODO_in_value_proposition_fails(self) -> None:
+        path = _write(
+            """
+            ---
+            value_proposition: "TODO: write this later"
+            route_mix:
+              ip: 1
+              interest: 0
+              info: 0
+            stage: 留存
+            ---
+            ## My nickname
+            - 妍
+            ## My personality
+            沉穩有耐心
+            ## Off-limits
+            - 不戰
+            """
+        )
+        vp = parse_voice_profile("c", "x", path)
+        self.assertFalse(vp.is_complete)
+        self.assertIn("value_proposition", vp.missing_fields)
+
+    def test_FIXME_in_personality_fails(self) -> None:
+        path = self._profile("""
+            ## My nickname
+            - 妍
+            ## My personality
+            FIXME — fill this in
+            ## Off-limits
+            - 不戰
+        """)
+        vp = parse_voice_profile("c", "x", path)
+        self.assertFalse(vp.is_complete)
+        self.assertIn("personality", vp.missing_fields)
+
+    def test_lorem_ipsum_in_offlimits_fails(self) -> None:
+        path = self._profile("""
+            ## My nickname
+            - 妍
+            ## My personality
+            真實個性
+            ## Off-limits
+            lorem ipsum dolor sit amet
+        """)
+        vp = parse_voice_profile("c", "x", path)
+        self.assertFalse(vp.is_complete)
+        self.assertIn("off_limits", vp.missing_fields)
+
+    def test_stub_literal_in_nickname_fails(self) -> None:
+        path = self._profile("""
+            ## My nickname
+            - test
+            ## My personality
+            真實個性
+            ## Off-limits
+            - 不戰
+        """)
+        vp = parse_voice_profile("c", "x", path)
+        self.assertFalse(vp.is_complete)
+        self.assertIn("nickname", vp.missing_fields)
+
+    def test_chinese_placeholder_phrases_fail(self) -> None:
+        for marker in ("（待補）", "（待填）", "（暫填）"):
+            path = self._profile(f"""
+                ## My nickname
+                - 妍
+                ## My personality
+                真實個性
+                ## Off-limits
+                - {marker}
+            """)
+            vp = parse_voice_profile("c", "x", path)
+            self.assertFalse(vp.is_complete, f"marker {marker!r} should fail")
+
+    def test_real_content_passes(self) -> None:
+        path = self._profile("""
+            ## My nickname
+            - 妍
+            ## My personality
+            沉穩、不愛說重話、用生活譬喻
+            ## Off-limits
+            - 不解卦
+            - 不評論個人選擇
+        """)
+        vp = parse_voice_profile("c", "x", path)
+        self.assertTrue(vp.is_complete)
+
+
 class StageObjectiveTests(unittest.TestCase):
     def test_stage_objective_for_each_valid_stage(self) -> None:
         for stage in ("拉新", "留存", "活躍", "裂變"):

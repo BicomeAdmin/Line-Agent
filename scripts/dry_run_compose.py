@@ -29,7 +29,7 @@ from pathlib import Path
 
 import _bootstrap  # noqa: F401
 
-from app.ai.codex_compose import ComposerUnavailable, compose_via_codex
+from app.ai.codex_compose import ComposerUnavailable, compose_brand_post_via_codex, compose_via_codex
 from app.ai.voice_profile_v2 import parse_voice_profile
 from app.storage.config_loader import load_community_config
 from app.storage.paths import customer_data_root, voice_profile_path
@@ -45,6 +45,11 @@ def main() -> int:
     parser.add_argument("--last-n", type=int, default=20)
     parser.add_argument("--source", choices=["live", "import", "inline"], default="import")
     parser.add_argument("--timeout", type=int, default=90)
+    parser.add_argument(
+        "--brief",
+        default=None,
+        help="When set, run the brand-mode composer with this brief (no selector / no fingerprint mirror) — same path that scheduled_post compose_mode triggers.",
+    )
     args = parser.parse_args()
 
     try:
@@ -72,6 +77,12 @@ def main() -> int:
         print(f"⚠️  voice_profile 未填完整，composer 會 refuse。先補：{list(vp.missing_fields)}")
         print("   仍會跑 selector 給你看，但不呼叫 codex。")
         print()
+
+    # Brand-mode short-circuit: skip selector entirely (it's a proactive
+    # post, not a reply). Use recent_self_posts for voice mirror, optionally
+    # tail of chat_export for context.
+    if args.brief:
+        return _run_brand_mode(args, community, vp)
 
     # Source messages
     messages = _load_messages(args, community)
@@ -153,6 +164,64 @@ def main() -> int:
         # Lint the draft against the Taiwan chat register cheat-sheet
         # so we can spot stiff / broadcast outputs before they hit
         # production.
+        from app.ai.draft_linter import score_draft
+        lint = score_draft(out.draft)
+        print()
+        emoji = {"natural": "🌿", "ok": "🆗", "stiff": "⚠️ ", "broadcast": "🚨"}.get(lint.verdict, "?")
+        print(f"  lint: {emoji} score={lint.score}  verdict={lint.verdict}")
+        if lint.issues:
+            for i in lint.issues:
+                print(f"    - {i}")
+    print()
+    print("(no review_store written, no Lark sent, no audit logged)")
+    return 0
+
+
+def _run_brand_mode(args, community, vp) -> int:
+    """Brand-mode dry-run: same path scheduled_post compose_mode uses."""
+
+    print(f"=== brand-mode dry-run ===")
+    print(f"brief: {args.brief}")
+    print()
+
+    if not vp.is_complete:
+        print("→ composer skipped (voice_profile incomplete)")
+        return 2
+
+    persona = get_persona_context(args.customer_id, args.community_id)
+    recent_self_posts = [
+        str(p.get("text") or "")
+        for p in (persona.get("recent_self_posts") or [])
+        if isinstance(p, dict)
+    ]
+    print(f"recent_self_posts: {len(recent_self_posts)} entries")
+    for s in recent_self_posts[:3]:
+        print(f"  - {s[:80]}")
+    print()
+
+    print(f"Composer (codex brand-mode, timeout={args.timeout}s):")
+    try:
+        out = compose_brand_post_via_codex(
+            voice_profile=vp,
+            community_name=community.display_name,
+            brief=args.brief,
+            thread_excerpt=[],
+            recent_self_posts=recent_self_posts,
+            timeout_seconds=args.timeout,
+        )
+    except ComposerUnavailable as exc:
+        print(f"❌ ComposerUnavailable: {exc}")
+        return 2
+
+    print(f"  should_engage: {out.should_engage}")
+    print(f"  rationale: {out.rationale}")
+    print(f"  confidence: {out.confidence:.2f}")
+    print(f"  off_limits_hit: {out.off_limits_hit}")
+    if out.draft:
+        print()
+        print("  draft ↓")
+        for line in out.draft.splitlines():
+            print(f"    {line}")
         from app.ai.draft_linter import score_draft
         lint = score_draft(out.draft)
         print()

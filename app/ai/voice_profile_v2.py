@@ -135,7 +135,7 @@ def parse_voice_profile(
     observed = _extract_section(body, "Observed community lines")
 
     missing: list[str] = []
-    if not value_prop:
+    if not value_prop or _is_placeholder(value_prop):
         missing.append("value_proposition")
     if route_mix.ip + route_mix.interest + route_mix.info <= 0:
         missing.append("route_mix")
@@ -147,6 +147,10 @@ def parse_voice_profile(
         missing.append("personality")
     if not off_limits or _is_placeholder(off_limits):
         missing.append("off_limits")
+    if style_anchors and _is_placeholder(style_anchors):
+        # style_anchors is optional in shape but if present and a
+        # placeholder, refuse — operator clearly intended to fill it.
+        missing.append("style_anchors_placeholder")
 
     return VoiceProfile(
         customer_id=customer_id,
@@ -228,8 +232,34 @@ def _extract_section_first_bullet(body: str, heading_keyword: str) -> str:
     return section.splitlines()[0].strip() if section.splitlines() else ""
 
 
-_PLACEHOLDER_MARKERS = ("（請操作員填", "（請操作員寫", "（未設定）", "（待補")
+_PLACEHOLDER_MARKERS = (
+    # Chinese placeholder phrases the bootstrap script writes
+    "（請操作員填", "（請操作員寫", "（未設定）", "（待補", "（待填", "（補上",
+    "（待寫", "（example", "（範例", "（樣本待補", "（暫填",
+    # English placeholders developers / operators sometimes leave in
+    "TODO", "FIXME", "todo:", "fixme:", "lorem ipsum", "placeholder",
+    "<placeholder>", "[placeholder]", "{{", "xxx",
+    "fill in", "fill this in", "to be filled", "tbd", "tbc",
+)
+# Short stub texts that operators leave when bootstrapping but forget to expand.
+_STUB_LITERALS = {"test", "wip", "draft", "n/a", "na", "?", "??", "???", "..."}
 
 
 def _is_placeholder(text: str) -> bool:
-    return any(marker in text for marker in _PLACEHOLDER_MARKERS)
+    """Return True when `text` is empty-equivalent — a placeholder
+    marker, a stub literal, or a too-short string that clearly isn't
+    real content. Decisions based on this gate composer activation;
+    err on the side of refusing rather than drafting from junk.
+    """
+
+    if not text:
+        return True
+    lowered = text.strip().lower()
+    if not lowered:
+        return True
+    if lowered in _STUB_LITERALS:
+        return True
+    for marker in _PLACEHOLDER_MARKERS:
+        if marker.lower() in lowered:
+            return True
+    return False
