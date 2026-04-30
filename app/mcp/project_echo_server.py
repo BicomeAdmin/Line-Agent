@@ -28,7 +28,13 @@ from mcp.types import TextContent, Tool
 
 from app.core.audit import append_audit_event
 from app.core.jobs import job_registry
-from app.core.reviews import ACTIVE_REVIEW_STATUSES, review_store
+from app.core.reviews import (
+    ACTIVE_REVIEW_STATUSES,
+    NEAR_DUPLICATE_WINDOW_MINUTES,
+    find_recent_duplicate_send,
+    review_store,
+)
+from app.core.timezone import to_taipei_str
 from app.lark.cards import build_review_card
 from app.storage.config_loader import load_all_communities, load_community_config, load_customer_config
 from app.workflows.acceptance_status import get_acceptance_status
@@ -203,6 +209,34 @@ def tool_compose_and_send(
     community = load_community_config(customer_id, community_id)
     customer = load_customer_config(customer_id)
 
+    # Near-duplicate nudge: if the same draft was sent to this community in
+    # the last NEAR_DUPLICATE_WINDOW_MINUTES, surface a warning to the
+    # operator — don't block, they may have a legitimate reason (the prior
+    # send was deleted, the LINE UI swallowed it, etc.). 2026-04-29 incident
+    # had byte-identical content sent 2-3 times within 7 min after a UI hiccup.
+    near_dup_warning: dict[str, Any] | None = None
+    duplicate = find_recent_duplicate_send(community_id, text)
+    if duplicate is not None:
+        import time as _time
+        from datetime import datetime, timezone
+        minutes_ago = max(0, int((_time.time() - duplicate.updated_at) / 60))
+        sent_at_dt = datetime.fromtimestamp(duplicate.updated_at, tz=timezone.utc)
+        near_dup_warning = {
+            "recent_review_id": duplicate.review_id,
+            "sent_at_taipei": to_taipei_str(sent_at_dt),
+            "minutes_ago": minutes_ago,
+            "window_minutes": NEAR_DUPLICATE_WINDOW_MINUTES,
+        }
+        append_audit_event(
+            customer_id,
+            "mcp_compose_near_duplicate_detected",
+            {
+                "community_id": community_id,
+                "text_preview": text[:60],
+                **near_dup_warning,
+            },
+        )
+
     # Synthesize a job-style identity so the existing review_store / approval
     # pathway can pick this up. The "job_id" used as review_id is generated here
     # from the registry to keep the audit trail unified with other origin paths.
@@ -222,6 +256,11 @@ def tool_compose_and_send(
     job_id = job.job_id
     job.payload["job_id"] = job_id
 
+    draft_title = "LLM 生成稿件待審核"
+    if near_dup_warning is not None:
+        draft_title = (
+            f"⚠️ {near_dup_warning['minutes_ago']} 分鐘前剛送過相同稿件 — {draft_title}"
+        )
     review_card = build_review_card(
         customer_name=customer.display_name,
         community_name=community.display_name,
@@ -232,7 +271,7 @@ def tool_compose_and_send(
         device_id=community.device_id,
         reason=f"mcp_compose:{source}",
         confidence=None,
-        draft_title="LLM 生成稿件待審核",
+        draft_title=draft_title,
     )
 
     # Use the standard ReviewRecord shape so existing list/approve/edit/ignore
@@ -298,15 +337,16 @@ def tool_compose_and_send(
         },
     )
 
-    return _ok(
-        {
-            "review_id": job_id,
-            "community_id": community_id,
-            "community_name": community.display_name,
-            "draft_preview": text[:80],
-            "status_hint": "review_pending — operator must approve via approve_review or Lark card",
-        }
-    )
+    response: dict[str, Any] = {
+        "review_id": job_id,
+        "community_id": community_id,
+        "community_name": community.display_name,
+        "draft_preview": text[:80],
+        "status_hint": "review_pending — operator must approve via approve_review or Lark card",
+    }
+    if near_dup_warning is not None:
+        response["near_duplicate_warning"] = near_dup_warning
+    return _ok(response)
 
 
 def tool_list_pending_reviews(community_id: str | None = None) -> dict[str, Any]:
