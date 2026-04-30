@@ -53,6 +53,46 @@ class DraftLinterTests(unittest.TestCase):
         self.assertLess(r.score, 80)
         self.assertTrue(any("語助詞" in i for i in r.issues))
 
+    def test_essayistic_contrast_caught_2026_04_29_regression(self) -> None:
+        # 2026-04-29 incident: this draft scored 100/natural in the old
+        # linter and was sent through to the operator, who ignored it
+        # for sounding like an essayist instead of a peer.
+        # See memory/feedback_essayistic_register.md.
+        text = (
+            "我自己睡前坐也是這樣喔，感覺不是把心壓安靜。\n"
+            "比較像先讓身體知道可以慢慢鬆下來了。"
+        )
+        r = score_draft(text)
+        # Must drop below the watch_tick gate (60) so a single hit
+        # actually blocks rather than warns.
+        self.assertLess(r.score, 60)
+        self.assertIn(r.verdict, ("stiff", "broadcast"))
+        self.assertTrue(any("散文" in i or "對比反思" in i for i in r.issues))
+        self.assertIn("不是…比較像", r.breakdown.get("essayistic_hits", []))
+
+    def test_essayistic_yu_qi_shuo_caught(self) -> None:
+        r = score_draft("與其說是修行，倒不如說是日常的累積")
+        self.assertLess(r.score, 50)
+        self.assertTrue(r.breakdown.get("essayistic_hits"))
+
+    def test_essayistic_solo_marker_caught(self) -> None:
+        r = score_draft("我自己也覺得反而像是在練習放下啊")
+        self.assertLess(r.score, 80)
+        self.assertIn("反而像是", r.breakdown.get("essayistic_hits", []))
+
+    def test_essayistic_no_false_positive_on_everyday_contrast(self) -> None:
+        # "不是 X 而是 Y" — common everyday chat structure, must NOT
+        # be flagged as essayist. Score may be reduced for other reasons
+        # (no first-person opener etc) but essayistic_hits must be empty.
+        r = score_draft("我看不是只有他喔，而是大家都這樣覺得啦")
+        self.assertEqual(r.breakdown.get("essayistic_hits"), [])
+
+    def test_essayistic_no_false_positive_on_solo_bijiaoxiang(self) -> None:
+        # Standalone "比較像" without contrast pair — natural usage.
+        r = score_draft("我覺得今天的天氣比較像春天耶")
+        self.assertEqual(r.breakdown.get("essayistic_hits"), [])
+        self.assertGreaterEqual(r.score, 80)
+
     def test_to_dict_serializes_cleanly(self) -> None:
         r = score_draft("我覺得這個應該還行喔")
         d = r.to_dict()
