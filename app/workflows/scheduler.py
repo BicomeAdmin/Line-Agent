@@ -101,6 +101,9 @@ def enqueue_due_scheduled_posts(now: float | None = None) -> dict[str, object]:
                 "post_id": post_id,
                 "draft_text": post.get("text"),
                 "pre_approved": bool(post.get("pre_approved")),
+                "compose_mode": bool(post.get("compose_mode")),
+                "brief": post.get("brief"),
+                "send_at_iso": post.get("send_at_iso"),
             },
         )
         # Stamp the assigned job_id back into the payload so the processor builds the

@@ -76,5 +76,49 @@ class SchedulerScheduledPostsTests(unittest.TestCase):
         mock_mark_due.assert_not_called()
 
 
+class SchedulerComposeModeTests(unittest.TestCase):
+    """compose_mode posts pass brief + compose_mode flag through the job payload."""
+
+    @patch("app.workflows.scheduler.append_audit_event", lambda *a, **k: None)
+    @patch("app.workflows.scheduler.mark_post_due")
+    @patch("app.workflows.scheduler.load_community_config")
+    @patch("app.workflows.scheduler.find_due_posts")
+    @patch("app.workflows.scheduler.job_registry")
+    def test_compose_mode_payload_includes_brief_and_send_at(
+        self,
+        mock_job_registry,
+        mock_find_due,
+        mock_load_community,
+        mock_mark_due,
+    ) -> None:
+        mock_find_due.return_value = [
+            {
+                "customer_id": "customer_a",
+                "community_id": "openchat_004",
+                "post_id": "post-llm",
+                "send_at_iso": "2026-05-04T20:00:00+08:00",
+                "text": "",
+                "brief": "靜坐入門引子",
+                "compose_mode": True,
+                "pre_approved": False,
+            }
+        ]
+        mock_load_community.return_value = MagicMock(device_id="emulator-5554")
+        mock_job = MagicMock()
+        mock_job.job_id = "job-llm-1"
+        mock_job.payload = {}
+        mock_job_registry.enqueue.return_value = mock_job
+
+        result = enqueue_due_scheduled_posts(now=1234567890.0)
+
+        self.assertEqual(result["enqueued_count"], 1)
+        args, _ = mock_job_registry.enqueue.call_args
+        payload = args[1]
+        self.assertTrue(payload["compose_mode"])
+        self.assertEqual(payload["brief"], "靜坐入門引子")
+        self.assertEqual(payload["send_at_iso"], "2026-05-04T20:00:00+08:00")
+        self.assertEqual(payload["draft_text"], "")  # Empty until composer runs
+
+
 if __name__ == "__main__":
     unittest.main()
