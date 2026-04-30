@@ -41,14 +41,20 @@ from __future__ import annotations
 
 import html
 import re
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 
 # Sentinel for the operator's own messages (identified structurally
 # via right-alignment). The reply-target selector treats this as
 # "self" without needing a per-community nickname match.
 SELF_SENDER = "__operator__"
+
+_TPE = ZoneInfo("Asia/Taipei")
+_LINE_TIME_RE = re.compile(r"^(上午|下午)?\s*(\d{1,2}):(\d{2})$")
 
 
 @dataclass(frozen=True)
@@ -58,9 +64,53 @@ class ChatMessage:
     position: int
     source: str = "uiautomator"
     is_self: bool = False
+    # UTC seconds. None when the LINE UI didn't expose a timestamp for
+    # this bubble (e.g. consecutive messages within the same minute
+    # collapse to a single timestamp; we attribute it to the LAST
+    # bubble in that run, the older ones get None).
+    ts_epoch: float | None = None
+    # Original LINE label, e.g. "下午4:19" — kept for debugging /
+    # operator-facing display. Empty when no timestamp was parsed.
+    ts_label: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+def _parse_line_time_label(label: str, *, now_tpe: datetime) -> datetime | None:
+    """Convert a LINE chat row timestamp like '下午4:19' / '上午10:28' / '16:19'
+    into a TPE datetime.
+
+    LINE only shows H:MM (no date) for today's messages. If the resulting
+    time is more than ~3h IN THE FUTURE relative to now_tpe, we assume it
+    belongs to YESTERDAY (LINE shows yesterday's H:MM after midnight roll
+    until the user scrolls past a date separator). Returning None means
+    the label couldn't be parsed.
+
+    Date separators ('昨天' / '5月3日' / specific dates) are NOT yet
+    supported — caller falls back to ts_epoch=None, which the temporal
+    layer treats as "unknown age, very stale".
+    """
+
+    text = (label or "").strip()
+    if not text:
+        return None
+    m = _LINE_TIME_RE.match(text)
+    if not m:
+        return None
+    period, hour_s, minute_s = m.group(1), m.group(2), m.group(3)
+    hour, minute = int(hour_s), int(minute_s)
+    if period == "下午" and hour < 12:
+        hour += 12
+    elif period == "上午" and hour == 12:
+        hour = 0
+    if not (0 <= hour < 24 and 0 <= minute < 60):
+        return None
+    candidate = now_tpe.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    # If the parsed time is meaningfully in the future, it's yesterday's.
+    if candidate > now_tpe + timedelta(hours=3):
+        candidate -= timedelta(days=1)
+    return candidate
 
 
 _BOUNDS_RE = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
@@ -81,7 +131,12 @@ def _parse_bounds(raw: str | None) -> tuple[int, int, int, int] | None:
     return tuple(int(x) for x in m.groups())  # type: ignore[return-value]
 
 
-def parse_line_chat(xml_text: str, limit: int = 10) -> list[ChatMessage]:
+def parse_line_chat(
+    xml_text: str,
+    limit: int = 10,
+    *,
+    now_epoch: float | None = None,
+) -> list[ChatMessage]:
     """Structured parse with sender attribution. See module docstring
     for resource-id semantics.
 
@@ -91,12 +146,21 @@ def parse_line_chat(xml_text: str, limit: int = 10) -> list[ChatMessage]:
     in which case attribute to SELF_SENDER and ignore the row_sender,
     which would be a stale label for someone else). Flush trailing
     pending at end.
+
+    Timestamps: chat_ui_row_timestamp nodes are collected with their
+    y_top during the walk and paired to messages AFTER all bubbles are
+    flushed — pair by y-proximity (timestamp lives within ~200px below
+    its bubble row). Messages without a nearby timestamp get
+    ts_epoch=None, which downstream temporal logic treats as "unknown
+    age, suspect stale".
     """
 
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError:
         return []
+
+    now_tpe = datetime.fromtimestamp(now_epoch if now_epoch is not None else time.time(), _TPE)
 
     # Detect screen width from the root bounds for a sane right-half threshold.
     root_bounds = _parse_bounds(root.attrib.get("bounds")) if hasattr(root, "attrib") else None
@@ -107,8 +171,10 @@ def parse_line_chat(xml_text: str, limit: int = 10) -> list[ChatMessage]:
     self_threshold_x = int(screen_width * 0.40)  # x_left ≥ 40% → self
 
     messages: list[ChatMessage] = []
+    message_y_tops: list[int] = []
     pending: dict | None = None     # {"text", "x_left", "y_top"}
     last_seen_sender: str | None = None  # for consecutive same-speaker runs
+    timestamps: list[tuple[int, str, datetime | None]] = []  # (y_top, label, parsed_dt)
 
     def flush(p: dict | None, *, sender_hint: str | None) -> None:
         if not p:
@@ -133,6 +199,7 @@ def parse_line_chat(xml_text: str, limit: int = 10) -> list[ChatMessage]:
                 is_self=is_self,
             )
         )
+        message_y_tops.append(p["y_top"])
 
     for node in root.iter("node"):
         rid = _short_rid(node.attrib.get("resource-id"))
@@ -161,6 +228,10 @@ def parse_line_chat(xml_text: str, limit: int = 10) -> list[ChatMessage]:
             last_seen_sender = text
             continue
 
+        if rid == "chat_ui_row_timestamp":
+            timestamps.append((bounds[1], text, _parse_line_time_label(text, now_tpe=now_tpe)))
+            continue
+
         # chat_ui_sender_name + chat_ui_content_text are quoted preceding
         # messages (reply context), not separate conversational entries.
         # Skip both.
@@ -169,12 +240,53 @@ def parse_line_chat(xml_text: str, limit: int = 10) -> list[ChatMessage]:
             # Folded pinned post bar at top. Skip.
             continue
 
-        # Other ids (timestamps, header_title, message_edit, etc.) are
-        # not content — ignore.
+        # Other ids (header_title, message_edit, etc.) are not content — ignore.
 
     # Trailing pending message with no row_sender after it: rely on
     # x-bounds (operator if right-aligned) or last_seen_sender carry-over.
     flush(pending, sender_hint=None)
+
+    # Pair timestamps to messages by y-proximity. A timestamp belongs
+    # to the bubble whose y_top is closest within a 200px window
+    # (LINE's row height is ~140-180px depending on font scaling).
+    # Each timestamp can claim only one bubble — sort by y, walk in
+    # order, attach to the most recently seen bubble whose y is
+    # within window.
+    if messages and timestamps:
+        timestamps.sort(key=lambda t: t[0])
+        ts_idx = 0
+        ts_for_msg: list[tuple[str, datetime | None]] = [("", None)] * len(messages)
+        for i, msg_y in enumerate(message_y_tops):
+            best = None
+            for ts in timestamps:
+                ts_y, label, parsed = ts
+                # Timestamp shows just below its bubble; window 200px.
+                if 0 <= ts_y - msg_y <= 200:
+                    best = (label, parsed)
+                    break
+                # Some bubbles have timestamp slightly above (stacked
+                # rendering); allow a 50px upward window.
+                if -50 <= ts_y - msg_y < 0 and best is None:
+                    best = (label, parsed)
+            if best is not None:
+                ts_for_msg[i] = best
+        # Re-emit messages with ts attached.
+        rebuilt: list[ChatMessage] = []
+        for i, m in enumerate(messages):
+            label, parsed = ts_for_msg[i]
+            ts_epoch = parsed.timestamp() if parsed is not None else None
+            rebuilt.append(
+                ChatMessage(
+                    sender=m.sender,
+                    text=m.text,
+                    position=m.position,
+                    source=m.source,
+                    is_self=m.is_self,
+                    ts_epoch=ts_epoch,
+                    ts_label=label,
+                )
+            )
+        messages = rebuilt
 
     # Fallback to legacy text-node extraction if structural parse yielded
     # nothing (older LINE builds, broken dumps).
