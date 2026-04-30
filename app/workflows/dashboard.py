@@ -114,6 +114,12 @@ def collect_dashboard_data(customer_id: str = "customer_a") -> dict[str, object]
     health = _process_health()
     kpi = kpi_summary_for_dashboard(customer_id)
 
+    # Alert layer: roll up audit events + system invariants into
+    # operator-facing "today's actions" buckets. Sorted by severity.
+    from app.workflows.alert_aggregator import alerts_summary, collect_alerts
+    alerts = collect_alerts(customer_id, now=now)
+    alert_dicts = [a.to_dict() for a in alerts]
+
     return {
         "generated_at_taipei": to_taipei_str(datetime.fromtimestamp(now, timezone.utc)),
         "customer_id": customer_id,
@@ -126,6 +132,8 @@ def collect_dashboard_data(customer_id: str = "customer_a") -> dict[str, object]
         "recent_auto_fires": (metrics.get("auto_fires") or [])[-5:],
         "recent_audit": recent_audit,
         "kpi": kpi,
+        "alerts": alert_dicts,
+        "alerts_summary": alerts_summary(alerts),
     }
 
 

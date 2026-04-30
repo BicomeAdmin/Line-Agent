@@ -99,6 +99,30 @@ HTML_PAGE = """<!doctype html>
   .events .et.error, .events .et.failed { color: var(--bad); }
   .events .et.fired, .events .et.compose { color: var(--pending); }
   .empty { color: var(--muted); font-style: italic; }
+  /* Alert layer (今天該關注什麼) */
+  #alerts { grid-column: 1 / -1; }
+  #alerts.empty-alerts { display: none; }
+  .alert-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+  .alert-bar .pill { padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .alert-bar .pill.blocking { background: rgba(239, 83, 80, 0.25); color: var(--bad); }
+  .alert-bar .pill.important { background: rgba(255, 167, 38, 0.20); color: var(--warn); }
+  .alert-bar .pill.info { background: rgba(138, 150, 168, 0.18); color: var(--muted); }
+  .alert-list > .alert-item + .alert-item { margin-top: 6px; }
+  .alert-item {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+    padding: 10px 14px; border-radius: 4px;
+    background: rgba(255,255,255,0.02); border: 1px solid var(--border);
+  }
+  .alert-item.blocking { border-left: 4px solid var(--bad); background: rgba(239, 83, 80, 0.08); }
+  .alert-item.important { border-left: 4px solid var(--warn); background: rgba(255, 167, 38, 0.06); }
+  .alert-item.info { border-left: 4px solid var(--muted); }
+  .alert-item .severity-dot { display: none; }
+  .alert-item .body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .alert-item .title { font-weight: 600; font-size: 13px; line-height: 1.4; }
+  .alert-item .detail { color: var(--muted); font-size: 12px; line-height: 1.4; }
+  .alert-item .hint { color: var(--accent); font-size: 12px; line-height: 1.4; }
+  .alert-item .meta { flex: 0 0 auto; color: var(--muted); font-size: 11px; line-height: 1.4; text-align: right; white-space: nowrap; }
+  .alert-item .count-pill { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 8px; background: rgba(255,255,255,0.08); font-size: 11px; vertical-align: middle; }
   .btn-ignore {
     background: rgba(239, 83, 80, 0.15);
     color: var(--bad);
@@ -122,6 +146,7 @@ HTML_PAGE = """<!doctype html>
   <span style="margin-left:auto; color: var(--muted); font-size: 12px;">每 5 秒刷新</span>
 </header>
 <main>
+  <section class="panel" id="alerts"><h2>⚡ 今天該關注什麼</h2><div id="alert-content"></div></section>
   <section class="panel"><h2>🩺 系統健康</h2><div id="health"></div></section>
   <section class="panel"><h2>📨 24h 送發統計</h2><div id="metrics"></div></section>
   <section class="panel full"><h2>🌐 社群</h2><div id="communities"></div></section>
@@ -157,6 +182,42 @@ async function refresh() {
 
 function renderSnapshot(d) {
   $("ts").textContent = d.generated_at_taipei || "";
+
+  // Alerts (今天該關注什麼) — sticky at top, hidden when empty.
+  const alerts = d.alerts || [];
+  const summary = d.alerts_summary || {};
+  const alertSection = $("alerts");
+  if (alerts.length === 0) {
+    alertSection.classList.add("empty-alerts");
+    $("alert-content").innerHTML = "";
+  } else {
+    alertSection.classList.remove("empty-alerts");
+    const bar = `<div class="alert-bar">
+      ${summary.blocking ? `<span class="pill blocking">🔴 ${summary.blocking} 急</span>` : ""}
+      ${summary.important ? `<span class="pill important">🟠 ${summary.important} 注意</span>` : ""}
+      ${summary.info ? `<span class="pill info">ℹ️ ${summary.info} 自動處理</span>` : ""}
+    </div>`;
+    const items = alerts.map(a => {
+      const countPill = a.audit_event_count > 1
+        ? `<span class="count-pill">×${a.audit_event_count}</span>` : "";
+      const community = a.community_id
+        ? `<span class="muted">${escape(a.community_id)}</span>`
+        : "";
+      const ts = a.audit_ts_taipei
+        ? `<span class="muted">${escape(a.audit_ts_taipei)}</span>`
+        : "";
+      return `<div class="alert-item ${escape(a.severity)}">
+        <span class="severity-dot"></span>
+        <div class="body">
+          <div class="title">${escape(a.title)}${countPill}</div>
+          <div class="detail">${escape(a.detail)}</div>
+          ${a.action_hint ? `<div class="hint">→ ${escape(a.action_hint)}</div>` : ""}
+        </div>
+        <div class="meta">${community}<br/>${ts}</div>
+      </div>`;
+    }).join("");
+    $("alert-content").innerHTML = bar + `<div class="alert-list">${items}</div>`;
+  }
 
   // Health
   const h = d.health || {};
@@ -250,28 +311,43 @@ function renderSnapshot(d) {
     ${ws.map(w => `<tr><td>${escape(w.community_id)}</td><td>${escape(w.remaining_minutes)} 分</td><td>${escape(w.last_check_minutes_ago)} 分前</td></tr>`).join("")}
   </table>` : `<div class="empty">目前沒有追蹤中的社群</div>`;
 
-  // KPI 九宮格
+  // KPI 九宮格 — health band per Paul's stage thresholds
+  // (沉寂 / 偏冷 / 活躍 / 熱絡 based on avg daily messages)
   const kpi = (d.kpi || {}).rows || [];
+  const bandStyle = {
+    quiet: { badge: "bad",    label: "沉寂" },
+    cool:  { badge: "warn",   label: "偏冷" },
+    warm:  { badge: "good",   label: "活躍" },
+    hot:   { badge: "good",   label: "熱絡" },
+  };
   $("kpi").innerHTML = kpi.length ? `<table>
-    <tr><th>社群</th><th>近 7 天訊息</th><th>本週活躍人數</th><th>每日平均</th><th>更新</th></tr>
+    <tr><th>社群</th><th>狀態</th><th>近 7 天訊息</th><th>本週活躍人數</th><th>每日平均</th><th>更新</th></tr>
     ${kpi.map(r => {
       if (!r.snapshot_present) {
-        return `<tr><td>${escape(r.community_id)} ${escape(r.display_name)}</td><td colspan="4"><span class="muted">尚未計算（執行 compute_community_kpis）</span></td></tr>`;
+        return `<tr><td>${escape(r.community_id)} ${escape(r.display_name)}</td><td colspan="5"><span class="muted">尚未計算（執行 compute_community_kpis）</span></td></tr>`;
       }
       const msgs = r.messages_last_7_days || 0;
       const active = r.weekly_active_senders || 0;
       const avg = r.avg_daily_messages || 0;
       const ts = r.computed_at_taipei || "—";
-      const healthBadge = msgs >= 50 ? "good" : msgs >= 10 ? "warn" : "muted";
+      const band = bandStyle[r.health_band] || { badge: "muted", label: r.health_band_zh || "—" };
       return `<tr>
         <td>${escape(r.community_id)} <span class="muted">${escape(r.display_name)}</span></td>
-        <td><span class="badge ${healthBadge}">${msgs}</span></td>
+        <td><span class="badge ${band.badge}">${band.label}</span></td>
+        <td>${msgs}</td>
         <td>${active}</td>
         <td>${avg}</td>
         <td><span class="muted">${escape(ts).slice(0, 16)}</span></td>
       </tr>`;
     }).join("")}
-  </table>` : `<div class="empty">尚未有 KPI snapshot — 執行 compute_community_kpis</div>`;
+  </table>
+  <div style="margin-top:10px; color:var(--muted); font-size:11px;">
+    狀態判讀（依 Paul《私域流量》九宮格基準）：
+    <span class="badge bad">沉寂</span> &lt;5/日 &nbsp;
+    <span class="badge warn">偏冷</span> 5-14/日 &nbsp;
+    <span class="badge good">活躍</span> 15-49/日 &nbsp;
+    <span class="badge good">熱絡</span> ≥50/日（接近裂變）
+  </div>` : `<div class="empty">尚未有 KPI snapshot — 執行 compute_community_kpis</div>`;
 
   // Auto-fires
   const fs = d.recent_auto_fires || [];
